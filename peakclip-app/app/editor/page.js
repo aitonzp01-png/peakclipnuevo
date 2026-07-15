@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getSupabaseClient } from '../../lib/supabase'
 import { exportClip } from '../../lib/api'
+import { SubtitleOverlay, parseSRT } from '../../components/SubtitleOverlay'
 import ExportModal from './components/ExportModal'
 import ErrorBoundary from '../../lib/error-boundary'
 import './editor.css'
@@ -59,8 +60,6 @@ export default function EditorPage() {
   const router = useRouter()
   const videoRef = useRef(null)
   const mobileVideoRef = useRef(null)
-  const subtitleCanvasRef = useRef(null)
-  const mobileSubtitleCanvasRef = useRef(null)
   const faceCanvasRef = useRef(null)
   const waveformCanvasRef = useRef(null)
   const synthRef = useRef(null)
@@ -116,6 +115,7 @@ export default function EditorPage() {
   // SRT modal state
   const [srtInputText, setSrtInputText] = useState('')
   const [showSrtModal, setShowSrtModal] = useState(false)
+  const [parsedSRT, setParsedSRT] = useState([])
 
   // Panels & tabs
   const [leftPanelOpen, setLeftPanelOpen] = useState(true)
@@ -359,6 +359,23 @@ export default function EditorPage() {
               setTranscriptES(generateSpanishTranscript(defaultEN))
               setActiveTranscript(defaultEN)
             }
+
+            // Parse SRT for SubtitleOverlay rendering
+            let segments = []
+            if (clipData.subtitles_srt) {
+              segments = parseSRT(clipData.subtitles_srt)
+            } else if (clipData.srt_url) {
+              try {
+                const res = await fetch(clipData.srt_url)
+                if (res.ok) {
+                  const srtText = await res.text()
+                  segments = parseSRT(srtText)
+                }
+              } catch (e) {
+                console.warn('Failed to fetch SRT from url:', e)
+              }
+            }
+            setParsedSRT(segments)
 
             if (clipData.subtitle_style) {
               setSubtitleStyle(prev => ({ ...prev, ...clipData.subtitle_style }))
@@ -624,228 +641,20 @@ export default function EditorPage() {
     }
   }
 
-  // --- CANVAS SUBTITLE RENDERING ENGINE ---
-  const drawSubtitlesOnCanvas = (canvas, timeOverride) => {
-    if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-
-    if (selectedPresetId === 'none') return
-
-    const time = timeOverride != null ? timeOverride : currentTime
-    const activeWord = activeTranscript.find(w => !w.deleted && time >= w.startTime && time <= w.endTime)
-    if (!activeWord) {
-      let foundAny = false
-      for (let i = activeTranscript.length - 1; i >= 0; i--) {
-        const w = activeTranscript[i]
-        if (!w.deleted && time >= w.startTime && time <= w.endTime) { foundAny = true; break }
-      }
-      if (!foundAny) return
+  // --- SUBTITLE PRESET NAME MAPPER ---
+  const toComponentPreset = (id) => {
+    const map = {
+      'deepdiver': 'deep_diver',
+      'podp': 'pod_p',
+      'none': 'none',
+      'karaoke': 'karaoke',
+      'beasty': 'beasty',
+      'youshaei': 'youshaei',
+      'mozi': 'mozi',
+      'popline': 'popline',
+      'typewriter': 'typewriter'
     }
-
-    const phrases = groupWordsIntoPhrases(activeTranscript)
-    const activePhraseIdx = phrases.findIndex(p => p.some(w => !w.deleted && time >= w.startTime && time <= w.endTime))
-    if (activePhraseIdx === -1) return
-
-    const activePhrase = phrases[activePhraseIdx]
-    // Show words progressively: only words that have started + 1 upcoming
-    const wordsToDraw = activePhrase.filter(w => !w.deleted && w.startTime <= time + 1.0)
-    if (!wordsToDraw.length) return
-
-    const font = subtitleStyle.fontFamily
-    const fontSize = subtitleStyle.fontSize
-    const fontWeight = subtitleStyle.fontWeight
-    const textTransform = subtitleStyle.textTransform
-    const baseY = (canvas.height * subtitleStyle.positionY) / 100
-
-    // 1-by-1 Typewriter style
-    if (selectedPresetId === 'typewriter') {
-      ctx.save()
-      const wordText = textTransform === 'uppercase' ? activeWord.word.toUpperCase() :
-                       textTransform === 'lowercase' ? activeWord.word.toLowerCase() : activeWord.word
-      ctx.font = `${subtitleStyle.fontStyle || 'normal'} ${fontWeight} ${fontSize * 1.45}px ${font}`
-      const wordW = ctx.measureText(wordText).width
-      const textX = (canvas.width - wordW) / 2
-      ctx.strokeStyle = '#000000'
-      ctx.lineWidth = 7
-      ctx.lineJoin = 'round'
-      ctx.strokeText(wordText, textX, baseY)
-      ctx.fillStyle = subtitleStyle.highlightColor || '#ff1f1f'
-      ctx.fillText(wordText, textX, baseY)
-      ctx.restore()
-      return
-    }
-
-    // Group words into display lines for multi-line support
-    const charWidth = ctx.measureText('A').width || fontSize * 0.6
-    const displayLines = []
-    let line = []
-    let lineWidth = 0
-    const maxLineWidth = canvas.width * (subtitleStyle.maxWidth || 85) / 100
-
-    for (const w of wordsToDraw) {
-      let wt = w.word
-      if (textTransform === 'uppercase') wt = wt.toUpperCase()
-      if (textTransform === 'lowercase') wt = wt.toLowerCase()
-      ctx.font = `${subtitleStyle.fontStyle || 'normal'} ${fontWeight} ${fontSize}px ${font}`
-      const ww = ctx.measureText(wt + ' ').width
-      if (lineWidth + ww > maxLineWidth && line.length > 0) {
-        displayLines.push(line)
-        line = [{ word: w, text: wt, width: ww }]
-        lineWidth = ww
-      } else {
-        line.push({ word: w, text: wt, width: ww })
-        lineWidth += ww
-      }
-    }
-    if (line.length > 0) displayLines.push(line)
-
-    const lineHeight = fontSize * (subtitleStyle.lineHeight || 1.3)
-    const totalTextHeight = displayLines.length * lineHeight
-    const startY = baseY - totalTextHeight / 2 + lineHeight / 2
-
-    // Draw each line
-    for (let li = 0; li < displayLines.length; li++) {
-      const lineWords = displayLines[li]
-      const totalLineWidth = lineWords.reduce((a, w) => a + w.width, 0)
-      const autoScale = totalLineWidth > maxLineWidth ? maxLineWidth / totalLineWidth : 1
-      const letterSpacing = (subtitleStyle.letterSpacing || 0)
-      const lineY = startY + li * lineHeight
-
-      // Background for entire line
-      if (subtitleStyle.backgroundColor && subtitleStyle.backgroundColor !== 'transparent') {
-        const bgOpacity = subtitleStyle.backgroundOpacity != null ? subtitleStyle.backgroundOpacity / 100 : 1
-        const bgColor = hexToRgba(subtitleStyle.backgroundColor, bgOpacity)
-        const pad = (subtitleStyle.backgroundPadding || 10) * autoScale
-        const bgH = fontSize * autoScale * 1.3
-        const lineW = totalLineWidth * autoScale + (lineWords.length - 1) * letterSpacing * 0.5
-        let lineX = 0
-        if (subtitleStyle.textAlign === 'left') lineX = pad
-        else if (subtitleStyle.textAlign === 'right') lineX = canvas.width - lineW - pad
-        else lineX = (canvas.width - lineW) / 2
-        ctx.save()
-        ctx.fillStyle = bgColor
-        ctx.beginPath()
-        ctx.roundRect(lineX - pad, lineY - bgH * 0.8, lineW + pad * 2, bgH + pad * 2, subtitleStyle.backgroundBorderRadius || 6)
-        ctx.fill()
-        ctx.restore()
-      }
-
-      let startX = 0
-      if (subtitleStyle.textAlign === 'left') startX = 20
-      else if (subtitleStyle.textAlign === 'right') startX = canvas.width - totalLineWidth * autoScale - 20
-      else startX = (canvas.width - totalLineWidth * autoScale) / 2
-
-      for (const lw of lineWords) {
-        ctx.save()
-        const isPast = time > lw.word.endTime
-        const isActive = time >= lw.word.startTime && time <= lw.word.endTime
-        const isFuture = time < lw.word.startTime
-        const tw = ctx.measureText(lw.text).width * autoScale
-
-        // Future (unspoken) words are dim
-        if (isFuture) {
-          ctx.globalAlpha = 0.2
-        } else if (isPast) {
-          ctx.globalAlpha = 0.6
-        }
-
-        let color = subtitleStyle.color
-        let stroke = subtitleStyle.stroke
-        let strokeColor = subtitleStyle.strokeColor
-        let strokeWidth = subtitleStyle.strokeWidth
-
-        if (selectedPresetId === 'beasty') {
-          color = isActive ? '#000000' : '#ffffff'
-        } else if (selectedPresetId === 'youshaei') {
-          color = isActive ? '#ff1f1f' : '#ffffff'
-        } else if (selectedPresetId === 'popline') {
-          color = isActive ? '#000000' : '#ffffff'
-          stroke = true
-          strokeColor = '#000000'
-          strokeWidth = 2
-        } else if (selectedPresetId === 'mozi') {
-          color = '#ffffff'
-          stroke = true
-          strokeColor = '#000000'
-          strokeWidth = 4
-        } else if (selectedPresetId === 'deepdiver') {
-          color = '#ffffff'
-          stroke = true
-          strokeColor = 'rgba(0,0,0,0.5)'
-          strokeWidth = 2
-        } else if (selectedPresetId === 'karaoke') {
-          color = isActive ? (subtitleStyle.highlightColor || '#ff1f1f') : '#ffffff'
-          stroke = isActive
-          strokeColor = '#000000'
-          strokeWidth = 3
-        }
-
-        if (subtitleStyle.karaokeHighlight) {
-          color = isActive ? (subtitleStyle.highlightColor || '#ff1f1f') : subtitleStyle.color
-          if (isActive) {
-            stroke = true
-            strokeColor = '#000000'
-            strokeWidth = 3
-          }
-        }
-
-        ctx.font = `${subtitleStyle.fontStyle || 'normal'} ${fontWeight} ${fontSize * autoScale}px ${font}`
-
-        ctx.translate(startX, lineY)
-
-        if (subtitleStyle.shadow) {
-          ctx.shadowColor = subtitleStyle.shadowColor || '#000000'
-          ctx.shadowBlur = subtitleStyle.shadowBlur || 4
-          ctx.shadowOffsetX = subtitleStyle.shadowOffsetX || 2
-          ctx.shadowOffsetY = subtitleStyle.shadowOffsetY || 2
-        }
-
-        if (stroke) {
-          ctx.strokeStyle = strokeColor
-          ctx.lineWidth = strokeWidth
-          ctx.lineJoin = 'round'
-          ctx.strokeText(lw.text, 0, 0)
-        }
-
-        // Active word highlight bar
-        if (isActive && subtitleStyle.highlightColor && selectedPresetId !== 'karaoke') {
-          ctx.save()
-          ctx.fillStyle = subtitleStyle.highlightColor
-          ctx.globalAlpha = 0.2
-          const barPad = 4
-          ctx.beginPath()
-          ctx.roundRect(-barPad, -fontSize * autoScale * 0.65, tw + barPad * 2, fontSize * autoScale * 1.15, 4)
-          ctx.fill()
-          ctx.restore()
-        }
-
-        ctx.fillStyle = color
-        ctx.fillText(lw.text, 0, 0)
-        ctx.restore()
-
-        startX += lw.width * autoScale + (letterSpacing * 0.5)
-      }
-    }
-  }
-
-  const drawSubtitles = useCallback((videoTime) => {
-    drawSubtitlesOnCanvas(subtitleCanvasRef.current, videoTime)
-    drawSubtitlesOnCanvas(mobileSubtitleCanvasRef.current, videoTime)
-  }, [activeTranscript, subtitleStyle, selectedPresetId])
-
-  const hexToRgba = (hex, opacity) => {
-    if (hex.startsWith('rgba')) return hex
-    let c
-    if(/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)){
-        c= hex.substring(1).split('')
-        if(c.length== 3){
-            c= [c[0], c[0], c[1], c[1], c[2], c[2]]
-        }
-        c= '0x' + c.join('')
-        return 'rgba('+[(c>>16)&255, (c>>8)&255, c&255].join(',')+','+opacity+')'
-    }
-    return 'rgba(0,0,0,'+opacity+')'
+    return map[id] || 'youshaei'
   }
 
   // --- LERP & FACE DETECTION LOOP ---
@@ -900,9 +709,6 @@ export default function EditorPage() {
     }
   }
 
-  // Use refs to avoid 60fps re-renders from setCurrentTime in animation loop
-  const drawSubtitlesRef = useRef(drawSubtitles)
-  drawSubtitlesRef.current = drawSubtitles
   const lastTimeUpdateRef = useRef(0)
   // --- RENDER PLAYBACK LOOP ---
   useEffect(() => {
@@ -916,7 +722,6 @@ export default function EditorPage() {
         } else if (videoRef.current) {
           time = videoRef.current.currentTime
         }
-        drawSubtitlesRef.current(time)
         if (Math.abs(time - lastTimeUpdateRef.current) > 0.05) {
           setCurrentTime(time)
           lastTimeUpdateRef.current = time
@@ -1821,18 +1626,14 @@ export default function EditorPage() {
               />
 
               {/* Subtitles */}
-              <canvas
-                ref={subtitleCanvasRef}
-                width={360}
-                height={640}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: '100%',
-                  height: '100%',
-                  pointerEvents: 'none',
-                  zIndex: 10
-                }}
+              <SubtitleOverlay
+                parsedSRT={parsedSRT}
+                currentTime={currentTime}
+                style={toComponentPreset(selectedPresetId)}
+                fontSize={subtitleStyle.fontSize}
+                color={subtitleStyle.color}
+                bold={parseInt(subtitleStyle.fontWeight) >= 700}
+                position={subtitleStyle.positionY < 33 ? 'top' : subtitleStyle.positionY < 66 ? 'middle' : 'bottom'}
               />
 
               {/* Face Tracker */}
@@ -2500,11 +2301,14 @@ export default function EditorPage() {
       </header>
 
       <div className='editor-mobile-video-wrap'>
-        <canvas
-          ref={mobileSubtitleCanvasRef}
-          width={360}
-          height={640}
-          className='editor-mobile-subtitle-canvas'
+        <SubtitleOverlay
+          parsedSRT={parsedSRT}
+          currentTime={currentTime}
+          style={toComponentPreset(selectedPresetId)}
+          fontSize={subtitleStyle.fontSize}
+          color={subtitleStyle.color}
+          bold={parseInt(subtitleStyle.fontWeight) >= 700}
+          position={subtitleStyle.positionY < 33 ? 'top' : subtitleStyle.positionY < 66 ? 'middle' : 'bottom'}
         />
         {videoError ? (
           <div className='editor-mobile-video-error'>
