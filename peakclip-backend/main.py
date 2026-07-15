@@ -762,7 +762,7 @@ def generate_srt_subtitle(words, clip_start, clip_end, output_path):
     clip_words = [w for w in words if w['start'] < clip_end and w['end'] > clip_start]
     if not clip_words:
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write("")
+            f.write("1\n00:00:00,000 --> 00:00:00,100\n \n")
         return
     # Group consecutive words into phrases (gap < 1.0s, max 8 words, max 5s duration)
     phrases = []
@@ -1893,7 +1893,7 @@ Return JSON with this exact format:
                 if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
                     srt_storage_path = f"{job_id}/{job_id}_clip{i+1}.srt"
                     srt_storage_url = upload_with_verification(
-                        supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
+                        supabase, "clips", srt_path, srt_storage_path, "text/plain"
                     ) or ""
                     try:
                         with open(srt_path, 'r', encoding='utf-8') as _sf:
@@ -1908,7 +1908,8 @@ Return JSON with this exact format:
                 ) or ""
 
                 clip_id = str(uuid.uuid4())
-                words_json_value = json.dumps(words_data) if words_data else None
+                clip_words_data = [w for w in words_data if w['start'] < clip["end"] and w['end'] > clip_start] if words_data else []
+                words_json_value = json.dumps(clip_words_data) if clip_words_data else None
                 clip_row = {
                     "id": clip_id,
                     "user_id": user_id,
@@ -2641,7 +2642,7 @@ Return JSON with this exact format:
             if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
                 srt_storage_path = f"{job_id}/{job_id}_clip{i+1}.srt"
                 srt_storage_url = upload_with_verification(
-                    supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
+                    supabase, "clips", srt_path, srt_storage_path, "text/plain"
                 ) or ""
                 try:
                     with open(srt_path, 'r', encoding='utf-8') as _sf:
@@ -2659,7 +2660,8 @@ Return JSON with this exact format:
                 continue
 
             clip_id = str(uuid.uuid4())
-            words_json_value = json.dumps(words_data) if words_data else None
+            clip_words_data = [w for w in words_data if w['start'] < clip["end"] and w['end'] > clip_start] if words_data else []
+            words_json_value = json.dumps(clip_words_data) if clip_words_data else None
             clip_row = {
                 "id": clip_id,
                 "user_id": user_id,

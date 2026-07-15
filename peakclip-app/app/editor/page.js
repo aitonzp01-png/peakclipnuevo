@@ -129,7 +129,7 @@ export default function EditorPage() {
   const [zoomCanvas, setZoomCanvas] = useState(100)
 
   // Subtitle Style Settings
-  const [selectedPresetId, setSelectedPresetId] = useState('karaoke')
+  const [selectedPresetId, setSelectedPresetId] = useState('viralshort')
   const [subtitleStyle, setSubtitleStyle] = useState({
     fontFamily: 'Montserrat',
     fontSize: 44,
