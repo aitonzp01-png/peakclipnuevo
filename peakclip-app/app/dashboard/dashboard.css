@@ -1000,7 +1000,7 @@ body {
 }
 
 .db-clip-thumbnail {
-  height: 160px;
+  aspect-ratio: 9 / 16;
   width: 100%;
   position: relative;
   overflow: hidden;
@@ -1010,8 +1010,56 @@ body {
   justify-content: center;
 }
 
+.db-clip-thumbnail::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 55%, rgba(0,0,0,0.6));
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.db-clip-card:hover .db-clip-thumbnail::after {
+  opacity: 1;
+}
+
+.db-clip-play-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 2;
+}
+
+.db-clip-card:hover .db-clip-play-overlay {
+  opacity: 1;
+}
+
+.db-clip-play-btn {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.7);
+  border: 2px solid rgba(255,255,255,0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.2s, background 0.2s;
+}
+
+.db-clip-card:hover .db-clip-play-btn {
+  transform: scale(1.1);
+  background: rgba(0,0,0,0.85);
+}
+
 .db-clip-img {
   object-fit: cover;
+  width: 100% !important;
+  height: 100% !important;
+  position: relative !important;
 }
 
 .db-clip-thumb-placeholder {
@@ -1032,10 +1080,27 @@ body {
   font-weight: 800;
   border-radius: 4px;
   padding: 2px 8px;
+  z-index: 3;
+}
+
+.db-clip-duration-badge {
+  position: absolute;
+  bottom: 8px;
+  right: 8px;
+  background: rgba(0,0,0,0.75);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 2px 6px;
+  z-index: 3;
 }
 
 .db-clip-info {
   padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .db-clip-title {
@@ -1046,20 +1111,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   display: block;
-  margin-bottom: 4px;
-}
-
-.db-clip-platform {
-  font-size: 11px;
-  color: var(--db-text-secondary);
-  display: block;
-  margin-bottom: 8px;
 }
 
 .db-clip-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-top: 2px;
 }
 
 .db-clip-date {
@@ -1072,15 +1130,19 @@ body {
   border: none;
   cursor: pointer;
   font-size: 16px;
+  letter-spacing: 1px;
   color: var(--db-placeholder);
-  padding: 4px;
+  padding: 4px 8px;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
 }
 
 .db-clip-menu-btn:hover {
+  background: var(--db-hover);
   color: var(--db-text-primary);
 }
 

@@ -670,7 +670,7 @@ def debug():
 def generate_thumbnail(video_path, output_path, timestamp=5):
     subprocess.run([
         'ffmpeg', '-ss', str(timestamp), '-i', video_path,
-        '-vframes', '1', '-vf', 'scale=540:960',
+        '-vframes', '1', '-vf', 'scale=540:960:force_original_aspect_ratio=increase,crop=540:960',
         output_path, '-y'
     ], capture_output=True)
 

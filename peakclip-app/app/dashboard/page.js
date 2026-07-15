@@ -869,7 +869,6 @@ export default function Dashboard() {
                                 fill
                                 sizes="(max-width: 768px) 50vw, 25vw"
                                 className="db-clip-img"
-                                style={{ objectFit: 'cover' }}
                               />
                             ) : (
                               <div className="db-clip-thumb-placeholder">
@@ -882,15 +881,28 @@ export default function Dashboard() {
                               </div>
                             )}
                             
+                            <div className="db-clip-play-overlay">
+                              <div className="db-clip-play-btn">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                                  <polygon points="6 3 20 12 6 21 6 3" />
+                                </svg>
+                              </div>
+                            </div>
+                            
                             {/* NEW badge if created in last 24h */}
                             {new Date() - new Date(clip.created_at) < 24 * 60 * 60 * 1000 && (
                               <span className="db-clip-new-badge">New</span>
+                            )}
+                            
+                            {clip.duration && (
+                              <span className="db-clip-duration-badge">
+                                {Math.round(clip.duration)}s
+                              </span>
                             )}
                           </div>
                           
                           <div className="db-clip-info">
                             <span className="db-clip-title">{clip.title || 'Untitled clip'}</span>
-                            <span className="db-clip-platform">{clip.platform || 'YouTube'}</span>
                             
                             <div className="db-clip-footer">
                               <span className="db-clip-date">
@@ -1031,11 +1043,10 @@ export default function Dashboard() {
                           {clip.thumbnail_url ? (
                             <Image
                               src={clip.thumbnail_url}
-                               alt={clip.title || 'Clip thumbnail'}
+                              alt={clip.title || 'Clip thumbnail'}
                               fill
                               sizes="(max-width: 768px) 50vw, 25vw"
                               className="db-clip-img"
-                              style={{ objectFit: 'cover' }}
                             />
                           ) : (
                             <div className="db-clip-thumb-placeholder">
@@ -1048,18 +1059,31 @@ export default function Dashboard() {
                             </div>
                           )}
                           
+                          <div className="db-clip-play-overlay">
+                            <div className="db-clip-play-btn">
+                              <svg width="20" height="20" viewBox="0 0 24 24" fill="white">
+                                <polygon points="6 3 20 12 6 21 6 3" />
+                              </svg>
+                            </div>
+                          </div>
+                          
                           {new Date() - new Date(clip.created_at) < 24 * 60 * 60 * 1000 && (
                              <span className="db-clip-new-badge">New</span>
+                          )}
+                          
+                          {clip.duration && (
+                            <span className="db-clip-duration-badge">
+                              {Math.round(clip.duration)}s
+                            </span>
                           )}
                         </div>
                         
                         <div className="db-clip-info">
-                           <span className="db-clip-title">{clip.title || 'Untitled clip'}</span>
-                          <span className="db-clip-platform">{clip.platform || 'YouTube'}</span>
+                          <span className="db-clip-title">{clip.title || 'Untitled clip'}</span>
                           
                           <div className="db-clip-footer">
                             <span className="db-clip-date">
-                               {new Date(clip.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              {new Date(clip.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                             </span>
                             
                             <div style={{ position: 'relative' }}>
