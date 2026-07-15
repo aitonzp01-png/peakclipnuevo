@@ -233,15 +233,19 @@ def upload_with_verification(supabase, bucket, file_path, storage_path, content_
 async def lifespan(app: FastAPI):
     # Startup
     print(f"yt-dlp version: {yt_dlp.version.__version__}")
-    # Remove any stale cookies.txt — they cause "No video formats found" when expired.
-    # Proxy + PoToken are sufficient for YouTube access.
-    for _cf in ('cookies.txt',):
+    # Write cookies from YOUTUBE_COOKIES_B64 env var (decoded base64 → cookies.txt)
+    cookies_b64 = os.environ.get('YOUTUBE_COOKIES_B64', '')
+    if cookies_b64:
         try:
-            if os.path.exists(_cf):
-                os.remove(_cf)
-                print(f"COOKIES: removed stale {_cf}")
-        except Exception:
-            pass
+            import base64
+            cookies_data = base64.b64decode(cookies_b64).decode('utf-8')
+            with open('cookies.txt', 'w', encoding='utf-8') as _cf:
+                _cf.write(cookies_data)
+            print(f"COOKIES: written from YOUTUBE_COOKIES_B64 ({len(cookies_data)} bytes)")
+        except Exception as e:
+            print(f"COOKIES: failed to decode YOUTUBE_COOKIES_B64: {e}")
+    else:
+        print("COOKIES: no YOUTUBE_COOKIES_B64 env var")
     setup_oauth2_tokens()
     await run_migrations()
     await fetch_jwks()
@@ -1329,14 +1333,14 @@ def process_video_background(job_id: str, user_id: str, url: str):
             'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]',
             # 1080p
             'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]',
-            # WebM best >= 480p
-            'bestvideo[height>=480]+bestaudio/best[height>=480]',
-            # Best MP4 >= 480p
-            'best[ext=mp4][height>=480]',
-            # H.264 >= 480p
-            'bv[ext=mp4][vcodec^=avc1][height>=480]+ba[ext=m4a]',
-            # Last resort — any >= 480p
-            'bestvideo[height>=480]+bestaudio',
+            # WebM best >= 360p
+            'bestvideo[height>=360]+bestaudio/best[height>=360]',
+            # Best MP4 >= 360p
+            'best[ext=mp4]',
+            # H.264
+            'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]',
+            # Any format
+            'bestvideo+bestaudio/best',
         ]
         impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
 
@@ -1392,6 +1396,9 @@ def process_video_background(job_id: str, user_id: str, url: str):
                 # Always use impersonation on every attempt
                 use_imp = imp or 'chrome'
                 ydl_opts['impersonate'] = use_imp
+                # Use cookies.txt if available
+                if os.path.exists('cookies.txt') and os.path.getsize('cookies.txt') > 0:
+                    ydl_opts['cookiefile'] = 'cookies.txt'
                 # Interleave proxy/no-proxy: even attempts use proxy, odd skip it
                 use_proxy = proxy_url and not proxy_disabled and (attempt % 2 == 0)
                 if use_proxy:
@@ -1441,7 +1448,7 @@ def process_video_background(job_id: str, user_id: str, url: str):
                             _head = _f.read(500)
                         print(f"yt-dlp output too small ({os.path.getsize(video_path)} bytes): {_head[:200]}")
                     raise Exception("File not downloaded or too small")
-                # Verify resolution — reject below 480p
+                # Verify resolution — reject below 360p
                 try:
                     probe = subprocess.run(
                         ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
@@ -1450,10 +1457,10 @@ def process_video_background(job_id: str, user_id: str, url: str):
                     )
                     if probe.returncode == 0 and probe.stdout.strip():
                         h = int(probe.stdout.strip())
-                        if h < 480:
+                        if h < 360:
                             print(f"yt-dlp attempt {attempt+1}: resolution {h}p too low, retrying...")
                             os.remove(video_path)
-                            raise Exception(f"Resolution {h}p below 480p threshold")
+                            raise Exception(f"Resolution {h}p below 360p threshold")
                         print(f"yt-dlp attempt {attempt+1}: OK resolution={h}p")
                 except (ValueError, subprocess.TimeoutExpired, OSError) as probe_err:
                     print(f"yt-dlp attempt {attempt+1}: probe warning ({probe_err}), accepting file")
