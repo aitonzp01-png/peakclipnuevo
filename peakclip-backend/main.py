@@ -1877,7 +1877,7 @@ Return JSON with this exact format:
                 if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
                     srt_storage_path = f"{job_id}/{job_id}_clip{i+1}.srt"
                     srt_storage_url = upload_with_verification(
-                        supabase, "clips", srt_path, srt_storage_path, "text/plain"
+                        supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
                     ) or ""
                     try:
                         with open(srt_path, 'r', encoding='utf-8') as _sf:
@@ -2034,10 +2034,11 @@ async def export_clip(req: ExportRequest, user: dict = Depends(get_current_user)
             vf = f"{vf},colorbalance=rs=-.2:gs=.1:bs=.3"
 
         # Subtitles: generate ASS karaoke for progressive word-by-word reveal
+        # Frontend sends clip-relative timestamps (0 = clip start), so filter from 0 to trim_d
         ass_path = None
         if req.subtitle_style != "none" and req.subtitle_words:
             ass_path = os.path.join(tempfile.gettempdir(), f"{job_id}_subs.ass")
-            generate_ass_karaoke(req.subtitle_words, trim_s, trim_s + trim_d, ass_path, style=req.subtitle_style_obj)
+            generate_ass_karaoke(req.subtitle_words, 0, trim_d, ass_path, style=req.subtitle_style_obj)
             temp_files.append(ass_path)
 
         # Watermark via textfile
@@ -2624,7 +2625,7 @@ Return JSON with this exact format:
             if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
                 srt_storage_path = f"{job_id}/{job_id}_clip{i+1}.srt"
                 srt_storage_url = upload_with_verification(
-                    supabase, "clips", srt_path, srt_storage_path, "text/plain"
+                    supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
                 ) or ""
                 try:
                     with open(srt_path, 'r', encoding='utf-8') as _sf:
