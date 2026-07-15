@@ -1326,17 +1326,17 @@ def process_video_background(job_id: str, user_id: str, url: str):
         ]
         format_fallbacks = [
             # Try 4K first if available
-            'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]/best',
+            'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]',
             # 1080p
-            'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best',
-            # WebM best >= 720p
-            'bestvideo[height>=720]+bestaudio/best[height>=720]/best',
-            # Best MP4
-            'best[ext=mp4]/best',
-            # H.264 720p+
-            'bv[ext=mp4][vcodec^=avc1][height>=720]+ba[ext=m4a]/b[ext=mp4]',
-            # Last resort — any 720p+
-            'bestvideo[height>=720]+bestaudio/best',
+            'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]',
+            # WebM best >= 480p
+            'bestvideo[height>=480]+bestaudio/best[height>=480]',
+            # Best MP4 >= 480p
+            'best[ext=mp4][height>=480]',
+            # H.264 >= 480p
+            'bv[ext=mp4][vcodec^=avc1][height>=480]+ba[ext=m4a]',
+            # Last resort — any >= 480p
+            'bestvideo[height>=480]+bestaudio',
         ]
         impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
 
@@ -1415,7 +1415,7 @@ def process_video_background(job_id: str, user_id: str, url: str):
                 sub_opts = dict(ydl_opts)
                 sub_opts['url'] = url
                 try:
-                    sub_timeout = 60 if attempt < 4 else 120 if attempt < 8 else 300
+                    sub_timeout = 180 if attempt < 6 else 300
                     result = subprocess.run(
                         [sys.executable, ytdlp_script, json.dumps(sub_opts)],
                         capture_output=True,
@@ -1441,7 +1441,7 @@ def process_video_background(job_id: str, user_id: str, url: str):
                             _head = _f.read(500)
                         print(f"yt-dlp output too small ({os.path.getsize(video_path)} bytes): {_head[:200]}")
                     raise Exception("File not downloaded or too small")
-                # Verify resolution — reject below 720p
+                # Verify resolution — reject below 480p
                 try:
                     probe = subprocess.run(
                         ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
@@ -1450,10 +1450,10 @@ def process_video_background(job_id: str, user_id: str, url: str):
                     )
                     if probe.returncode == 0 and probe.stdout.strip():
                         h = int(probe.stdout.strip())
-                        if h < 720:
+                        if h < 480:
                             print(f"yt-dlp attempt {attempt+1}: resolution {h}p too low, retrying...")
                             os.remove(video_path)
-                            raise Exception(f"Resolution {h}p below 720p threshold")
+                            raise Exception(f"Resolution {h}p below 480p threshold")
                         print(f"yt-dlp attempt {attempt+1}: OK resolution={h}p")
                 except (ValueError, subprocess.TimeoutExpired, OSError) as probe_err:
                     print(f"yt-dlp attempt {attempt+1}: probe warning ({probe_err}), accepting file")
