@@ -1335,10 +1335,8 @@ def process_video_background(job_id: str, user_id: str, url: str):
             'bestvideo+bestaudio/best',
             # H.264 specifically
             'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]',
-            # Quick fallback to any
+            # Fallback to any
             'best',
-            # Reliable worst
-            'worst[ext=mp4]/worst',
         ]
         impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
 
@@ -1653,7 +1651,7 @@ Transcript:
 
 RULES:
 - Return exactly 2 clips.
-- Let the clip duration be whatever the best viral moment lasts naturally — do not artificially extend or shorten.
+- Each clip MUST be between 20 and 60 seconds long. Aim for 20-45 seconds.
 - Prioritize: strong hooks, emotional peaks, surprising twists, humor, high-energy moments, or controversy.
 - Distribute clips across the video timeline — don't cluster them together.
 - Classify mood as: epic, hype, chill, funny, emotional, suspense.
@@ -1709,11 +1707,18 @@ Return JSON with this exact format:
         # Sort clips by hook_score descending (best viral moment first)
         clips_data["clips"].sort(key=lambda c: c.get("hook_score", 5), reverse=True)
 
+        # Enforce minimum clip duration (20s) — extend end time if too short
+        total_duration = words_data[-1]['end'] if words_data else 600
+        min_clip_duration = 20
+        for c in clips_data.get("clips", []):
+            dur = c.get("end", 0) - c.get("start", 0)
+            if dur < min_clip_duration:
+                c["end"] = min(c["start"] + min_clip_duration, total_duration)
+
         # Pad to exactly 2 clips if AI returned fewer
         if len(clips_data.get("clips", [])) < 2:
             existing = clips_data.get("clips", [])[:]
             last_end = max((c.get("end", 0) for c in existing), default=0)
-            total_duration = words_data[-1]['end'] if words_data else 600
             step = (total_duration - last_end) / max(1, 2 - len(existing))
             for j in range(len(existing), 2):
                 pad_start = last_end + (j - len(existing) + 1) * step
@@ -1792,7 +1797,7 @@ Return JSON with this exact format:
                             '-map', '[v]', '-map', '[a]']
                     if sub_idx is not None:
                         cmd += ['-map', f'{sub_idx}:s']
-                    cmd += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+                    cmd += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
                             '-preset', att['preset'], '-crf', att['crf'],
                             '-b:v', att['b_v'], '-maxrate', att['maxrate'], '-bufsize', att['bufsize'],
                             '-c:a', 'aac', '-b:a', '128k']
@@ -1818,8 +1823,9 @@ Return JSON with this exact format:
                             '-map', '0:v', '-map', '0:a']
                     if sub_idx is not None:
                         cmd += ['-map', f'{sub_idx}:s']
-                    cmd += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'medium', '-crf', '22',
-                            '-b:v', '2000k', '-maxrate', '3000k', '-bufsize', '6000k',
+                    cmd += ['-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-profile:v', 'high',
+                            '-preset', 'medium', '-crf', '18',
+                            '-b:v', '4000k', '-maxrate', '6000k', '-bufsize', '8000k',
                             '-c:a', 'aac', '-b:a', '128k']
                     if sub_idx is not None:
                         cmd += ['-c:s', 'mov_text', '-disposition:s:0', 'default']
@@ -2444,7 +2450,7 @@ Transcript:
 
 RULES:
 - Return exactly 2 clips.
-- Let the clip duration be whatever the best viral moment lasts naturally — do not artificially extend or shorten.
+- Each clip MUST be between 20 and 60 seconds long. Aim for 20-45 seconds.
 - Prioritize: strong hooks, emotional peaks, surprising twists, humor, high-energy moments, or controversy.
 - Distribute clips across the video timeline — don't cluster them together.
 - Classify mood as: epic, hype, chill, funny, emotional, suspense.
@@ -2495,11 +2501,18 @@ Return JSON with this exact format:
         clips_data = {"clips": []}
     clips_data["clips"].sort(key=lambda c: c.get("hook_score", 5), reverse=True)
 
+    # Enforce minimum clip duration (20s)
+    total_duration = words_data[-1].endTime if words_data else 600
+    min_clip_duration = 20
+    for c in clips_data.get("clips", []):
+        dur = c.get("end", 0) - c.get("start", 0)
+        if dur < min_clip_duration:
+            c["end"] = min(c["start"] + min_clip_duration, total_duration)
+
     # Pad to exactly 2 clips if AI returned fewer
     if len(clips_data["clips"]) < 2:
         existing = clips_data["clips"][:]
         last_end = max((c["end"] for c in existing), default=0)
-        total_duration = words_data[-1].endTime if words_data else 600
         step = (total_duration - last_end) / max(1, 2 - len(existing))
         for j in range(len(existing), 2):
             pad_start = last_end + (j - len(existing) + 1) * step
