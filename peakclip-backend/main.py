@@ -1680,7 +1680,7 @@ Return JSON with this exact format:
         if len(clips_data.get("clips", [])) < 2:
             existing = clips_data.get("clips", [])[:]
             last_end = max((c.get("end", 0) for c in existing), default=0)
-            total_duration = words_data[-1].endTime if words_data else 600
+            total_duration = words_data[-1]['end'] if words_data else 600
             step = (total_duration - last_end) / max(1, 2 - len(existing))
             for j in range(len(existing), 2):
                 pad_start = last_end + (j - len(existing) + 1) * step
