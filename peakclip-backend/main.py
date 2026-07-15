@@ -1520,9 +1520,25 @@ def process_video_background(job_id: str, user_id: str, url: str):
             raise Exception("Extracted audio file is missing or empty")
         print(f"Job {job_id}: audio extracted ({os.path.getsize(audio_path)} bytes)")
 
-        # Generate a thumbnail for the source video
+        # Download YouTube thumbnail (high quality) instead of generating from video
         thumb_path = f"thumbnails/{job_id}.jpg"
-        generate_thumbnail(video_path, thumb_path)
+        try:
+            with yt_dlp.YoutubeDL({'quiet': True, 'extract_flat': True, 'no_warnings': True}) as ydl:
+                info = ydl.extract_info(url, download=False)
+                thumb_url = info.get('thumbnail', '') if info else ''
+                if thumb_url:
+                    r = httpx.get(thumb_url, timeout=15, follow_redirects=True)
+                    if r.status_code == 200:
+                        with open(thumb_path, 'wb') as f:
+                            f.write(r.content)
+                        print(f"THUMBNAIL: downloaded from YouTube ({len(r.content)} bytes)")
+                    else:
+                        raise Exception(f"HTTP {r.status_code}")
+                else:
+                    raise Exception("no thumbnail URL in info")
+        except Exception as e:
+            print(f"THUMBNAIL: YouTube fetch failed ({e}), falling back to ffmpeg")
+            generate_thumbnail(video_path, thumb_path)
         local_files.append(thumb_path)
 
         check_deadline("transcription")
