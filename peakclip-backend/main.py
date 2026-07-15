@@ -1357,9 +1357,12 @@ def process_video_background(job_id: str, user_id: str, url: str):
                     'youtube_include_hls_manifest': False,
                     'source_address': '0.0.0.0',
                 }
-                if imp:
-                    ydl_opts['impersonate'] = imp
-                if proxy_url and not proxy_disabled:
+                # Always use impersonation on every attempt
+                use_imp = imp or 'chrome'
+                ydl_opts['impersonate'] = use_imp
+                # Interleave proxy/no-proxy: even attempts use proxy, odd skip it
+                use_proxy = proxy_url and not proxy_disabled and (attempt % 2 == 0)
+                if use_proxy:
                     ydl_opts['proxy'] = proxy_url
                 # OAuth2 for download — bypasses many YouTube IP blocks
                 if YOUTUBE_OAUTH_CLIENT_ID and os.path.exists(OAUTH_TOKEN_PATH):
@@ -1374,7 +1377,7 @@ def process_video_background(job_id: str, user_id: str, url: str):
                     extractor_args['youtubepot-bgutilhttp'] = {}
                 if extractor_args['youtube'] or 'youtubepot-bgutilhttp' in extractor_args:
                     ydl_opts['extractor_args'] = extractor_args
-                print(f"yt-dlp attempt {attempt+1}/{max_attempts} strategy={cfg} format={fmt} imp={imp} proxy={'yes' if proxy_url and not proxy_disabled else 'no'} oauth={'yes' if YOUTUBE_OAUTH_CLIENT_ID and os.path.exists(OAUTH_TOKEN_PATH) else 'no'}")
+                print(f"yt-dlp attempt {attempt+1}/{max_attempts} strategy={cfg} format={fmt} imp={use_imp} proxy={'yes' if use_proxy else 'no'} oauth={'yes' if YOUTUBE_OAUTH_CLIENT_ID and os.path.exists(OAUTH_TOKEN_PATH) else 'no'}")
                 # Run yt-dlp in a subprocess so we can hard-kill it on timeout
                 ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
                 sub_opts = dict(ydl_opts)
@@ -1416,26 +1419,12 @@ def process_video_background(job_id: str, user_id: str, url: str):
             except Exception as e:
                 last_err = e
                 err_lower = str(e).lower()
-                # If proxy fails (auth, DNS, tunnel), disable it and retry without proxy
-                if any(x in err_lower for x in ["407", "proxy authentication", "name or service not known", "tunnel connection failed", "unable to connect to proxy"]):
-                    if proxy_url and not proxy_disabled:
-                        print(f"Proxy failed ({err_lower[:80]}). Disabling proxy for remaining attempts.")
-                        proxy_disabled = True
-                        if attempt < max_attempts - 1:
-                            time.sleep(2)
-                            continue
-                if any(x in err_lower for x in ["rate-limited", "no video formats", "format not available", "requested format", "too small", "proxy", "tunnel connection"]):
-                    if attempt >= 1 and proxy_url and not proxy_disabled:
-                        print(f"Proxy failing repeatedly ({err_lower[:80]}). Disabling proxy to try direct connection.")
-                        proxy_disabled = True
-                        if attempt < max_attempts - 1:
-                            time.sleep(2)
-                            continue
-                    if attempt < max_attempts - 1:
-                        wait = min(3 + attempt, 15)
-                        print(f"YouTube issue (attempt {attempt+1}/{max_attempts}): {err_lower[:80]}, waiting {wait}s...")
-                        time.sleep(wait)
-                        continue
+                # Interleaving already alternates proxy/no-proxy; just retry
+                if attempt < max_attempts - 1:
+                    wait = min(3 + attempt, 15)
+                    print(f"YouTube issue (attempt {attempt+1}/{max_attempts}): {err_lower[:100]}, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
         # If yt-dlp completely failed, try public fallback services
         if last_err is not None or not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
             check_deadline("fallbacks")
