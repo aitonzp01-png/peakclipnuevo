@@ -1289,7 +1289,7 @@ def process_video_background(job_id: str, user_id: str, url: str):
         local_files = [video_path, audio_path]
 
         # Global deadline so the frontend is never left polling forever
-        deadline = time.time() + 600
+        deadline = time.time() + 1800
 
         def check_deadline(label=""):
             if time.time() > deadline:
