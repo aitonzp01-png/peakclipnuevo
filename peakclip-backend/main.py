@@ -1341,7 +1341,8 @@ def process_video_background(job_id: str, user_id: str, url: str):
         impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
 
         # Auth: residential proxy + POT server + extractor strategies
-        proxy_url = os.environ.get('YOUTUBE_PROXY')
+        HARDCODED_PROXY = "http://ALAMILLO_7G1gN:AlamilloChannels2003_@isp.oxylabs.io:8009"
+        proxy_url = os.environ.get('YOUTUBE_PROXY') or HARDCODED_PROXY
         po_token = os.environ.get('YOUTUBE_PO_TOKEN')
         visitor_data = os.environ.get('YOUTUBE_VISITOR_DATA')
 
