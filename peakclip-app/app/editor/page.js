@@ -45,7 +45,8 @@ const SUBTITLE_PRESETS = [
   { id: 'minimal', name: 'Minimal', color: '#ffffff', fontWeight: '300', letterSpacing: 2, textTransform: 'uppercase' },
   { id: 'boldpod', name: 'Bold Pod', color: '#ffffff', fontWeight: '900', fontSize: 36, backgroundColor: '#000000', backgroundOpacity: 60, backgroundBorderRadius: 12, stroke: true, strokeColor: '#000000', strokeWidth: 1 },
   { id: 'retro', name: 'Retro', color: '#ffcc00', fontFamily: 'Impact', fontWeight: '900', stroke: true, strokeColor: '#cc0000', strokeWidth: 4, textTransform: 'uppercase', letterSpacing: 1 },
-  { id: 'elegant', name: 'Elegant', color: '#d4af37', fontFamily: 'Playfair Display', fontWeight: '700', fontStyle: 'italic', lineHeight: 1.1, letterSpacing: 0.5, stroke: true, strokeColor: '#1a1a2e', strokeWidth: 1 }
+  { id: 'elegant', name: 'Elegant', color: '#d4af37', fontFamily: 'Playfair Display', fontWeight: '700', fontStyle: 'italic', lineHeight: 1.1, letterSpacing: 0.5, stroke: true, strokeColor: '#1a1a2e', strokeWidth: 1 },
+  { id: 'viralshort', name: 'Viral Shorts', color: '#ffffff', fontWeight: '900', fontSize: 44, backgroundColor: '#000000', backgroundOpacity: 50, backgroundBorderRadius: 12, stroke: true, strokeColor: '#000000', strokeWidth: 3, highlightColor: '#c4ff3d', karaokeHighlight: true }
 ]
 
 const VIRAL_HOOKS = [
@@ -131,7 +132,7 @@ export default function EditorPage() {
   const [selectedPresetId, setSelectedPresetId] = useState('karaoke')
   const [subtitleStyle, setSubtitleStyle] = useState({
     fontFamily: 'Montserrat',
-    fontSize: 28,
+    fontSize: 44,
     fontWeight: '900',
     color: '#ffffff',
     backgroundColor: 'transparent',
@@ -1980,7 +1981,7 @@ export default function EditorPage() {
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                         <div>
                           <label style={{ fontSize: '10px', color: 'var(--cream-text-secondary)' }}>Size ({subtitleStyle.fontSize}px)</label>
-                          <input type="range" min="12" max="72" value={subtitleStyle.fontSize} onChange={(e) => setSubtitleStyle({ ...subtitleStyle, fontSize: parseInt(e.target.value) })} style={{ width: '100%' }} />
+                          <input type="range" min="12" max="96" value={subtitleStyle.fontSize} onChange={(e) => setSubtitleStyle({ ...subtitleStyle, fontSize: parseInt(e.target.value) })} style={{ width: '100%' }} />
                         </div>
                         <div>
                           <label style={{ fontSize: '10px', color: 'var(--cream-text-secondary)' }}>Weight</label>
@@ -2710,7 +2711,7 @@ export default function EditorPage() {
                   <input
                     type='range'
                     min={12}
-                    max={60}
+                    max={96}
                     value={subtitleStyle.fontSize}
                     onChange={(e) => setSubtitleStyle({ ...subtitleStyle, fontSize: parseInt(e.target.value) })}
                     className='editor-mobile-slider'

@@ -810,13 +810,38 @@ def format_ass_time(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
-def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
-    """Generate ASS subtitle with \\k karaoke tags for progressive word-by-word reveal.
+def pad_hex(c):
+    if len(c) == 3:
+        return ''.join(x * 2 for x in c)
+    return c
 
-    Each phrase becomes one ASS Dialogue line with \\k<centiseconds> tags between
-    words. The libass renderer shows words filling progressively: SecondaryColour
-    (unspoken/dim) -> PrimaryColour (spoken). This creates the same progressive
-    reveal effect as the canvas preview.
+def hex_to_ass_bbggrr(hex_color):
+    """Convert #RRGGBB or #RGB to ASS &H00BBGGRR format."""
+    c = hex_color.lstrip('#')
+    c = pad_hex(c)
+    if len(c) < 6:
+        c = c.ljust(6, '0')
+    return f"&H00{c[4:6]}{c[2:4]}{c[0:2]}"
+
+def dim_color(hex_color, factor=0.35):
+    """Return a dimmed version of a hex color."""
+    c = hex_color.lstrip('#')
+    c = pad_hex(c)
+    r = int(c[0:2], 16)
+    g = int(c[2:4], 16)
+    b = int(c[4:6], 16)
+    dr = min(255, int(r * factor))
+    dg = min(255, int(g * factor))
+    db = min(255, int(b * factor))
+    return f"#{dr:02x}{dg:02x}{db:02x}"
+
+def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
+    """Generate ASS subtitles in viral YouTube Shorts style.
+
+    Each phrase generates cumulative dialogue lines — one per word position.
+    Past words are shown in PrimaryColour (white), the current word in a
+    highlight colour, and future words in a dimmed version. A semi-transparent
+    box (BorderStyle=3) provides the classic viral-short reading background.
     """
     clip_words = [w for w in words if w['start'] >= clip_start and w['end'] <= clip_end]
     if not clip_words:
@@ -837,28 +862,30 @@ def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
     if current:
         phrases.append(current)
 
-    font_name = "Arial"
-    font_size = 28
+    font_name = "Montserrat"
+    font_size = 44
     primary_color = "&H00FFFFFF"
-    secondary_color = "&H00333333"
+    highlight_color = "&H00AAFF00"
     outline_color = "&H00000000"
-    bold = 0
+    outline_width = 3
+    bold = -1
+    margin_v = 50
+
     if style:
-        font_name = style.get('fontFamily', 'Arial').replace(' ', '')
-        font_size = max(12, min(72, style.get('fontSize', 28)))
-        _pc = style.get('color', '#ffffff').lstrip('#')
-        if len(_pc) == 3:
-            _pc = ''.join(c*2 for c in _pc)
-        primary_color = f"&H00{_pc[4:6] if len(_pc)>=6 else 'FF'}{_pc[2:4] if len(_pc)>=4 else 'FF'}{_pc[0:2]}"
-        hc = style.get('highlightColor', '#c4ff3d').lstrip('#')
-        if len(hc) == 3:
-            hc = ''.join(c*2 for c in hc)
-        secondary_color = f"&H00{hc[4:6] if len(hc)>=6 else 'FF'}{hc[2:4] if len(hc)>=4 else 'FF'}{hc[0:2]}"
-        _oc = style.get('strokeColor', '#000000').lstrip('#')
-        if len(_oc) == 3:
-            _oc = ''.join(c*2 for c in _oc)
-        outline_color = f"&H00{_oc[4:6] if len(_oc)>=6 else 'FF'}{_oc[2:4] if len(_oc)>=4 else 'FF'}{_oc[0:2]}"
+        font_name = style.get('fontFamily', 'Montserrat').replace(' ', '')
+        font_size = max(12, min(96, style.get('fontSize', 44)))
+        primary_color = hex_to_ass_bbggrr(style.get('color', '#ffffff'))
+        hc_hex = style.get('highlightColor', '#c4ff3d')
+        highlight_color = hex_to_ass_bbggrr(hc_hex)
+        outline_color = hex_to_ass_bbggrr(style.get('strokeColor', '#000000'))
+        outline_width = max(0, min(10, style.get('strokeWidth', 3)))
         bold = -1 if style.get('fontWeight', '400') in ('700', '800', '900') else 0
+        pos_y = style.get('positionY', 78)
+        margin_v = max(0, min(200, int(100 - pos_y * 0.9)))
+
+    text_color_hex = style.get('color', '#ffffff') if style else '#ffffff'
+    dim_hex = dim_color(text_color_hex, 0.35)
+    secondary_color = hex_to_ass_bbggrr(dim_hex)
 
     lines = [
         "[Script Info]",
@@ -869,27 +896,33 @@ def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
         "",
         "[V4+ Styles]",
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},&H00000000,{bold},0,0,0,100,100,0,0,1,2,1,2,10,10,10,1",
+        f"Style: Default,{font_name},{font_size},{primary_color},{secondary_color},{outline_color},&H80000000,{bold},0,0,0,100,100,0,0,3,{outline_width},0,2,20,20,{margin_v},1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
     for phrase in phrases:
-        phrase_start = phrase[0]['start']
-        phrase_end = phrase[-1]['end']
-        text_parts = []
-        for w in phrase:
-            duration_cs = max(1, int(round((w['end'] - w['start']) * 100)))
-            word_text = w['word'].strip()
-            if word_text:
-                text_parts.append(f"{{\\k{duration_cs}}}{word_text}")
-        if not text_parts:
-            continue
-        dialogue_text = ' '.join(text_parts)
-        start_str = format_ass_time(max(0.0, phrase_start - clip_start))
-        end_str = format_ass_time(phrase_end - clip_start)
-        lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{dialogue_text}")
+        for i, word in enumerate(phrase):
+            start_time = word['start']
+            end_time = phrase[i + 1]['start'] if i + 1 < len(phrase) else phrase[-1]['end']
+
+            text_parts = []
+            for j, wd in enumerate(phrase):
+                wt = wd['word'].strip()
+                if not wt:
+                    continue
+                if j < i:
+                    text_parts.append(f"{{\\c{primary_color}}}{wt}")
+                elif j == i:
+                    text_parts.append(f"{{\\c{highlight_color}}}{wt}")
+                else:
+                    text_parts.append(f"{{\\c{secondary_color}}}{wt}")
+
+            dialogue_text = ' '.join(text_parts)
+            start_str = format_ass_time(max(0.0, start_time - clip_start))
+            end_str = format_ass_time(end_time - clip_start)
+            lines.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{dialogue_text}")
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write("\n".join(lines))
@@ -2040,20 +2073,12 @@ async def export_clip(req: ExportRequest, user: dict = Depends(get_current_user)
 
             # Override ASS style via force_style for user-customized values
             font_name = style.get('fontFamily', 'Montserrat').replace(' ', '')
-            font_size = max(12, min(72, style.get('fontSize', 28)))
-            margin_v = max(0, min(200, 80 - int(style.get('positionY', 78) * 0.8)))
-            _pc = style.get('color', '#ffffff').lstrip('#')
-            if len(_pc) == 3:
-                _pc = ''.join(c*2 for c in _pc)
-            pc_ass = f"&H00{_pc[4:6] if len(_pc)>=6 else 'FF'}{_pc[2:4] if len(_pc)>=4 else 'FF'}{_pc[0:2]}"
-            hc = style.get('highlightColor', '#c4ff3d').lstrip('#')
-            if len(hc) == 3:
-                hc = ''.join(c*2 for c in hc)
-            sc_ass = f"&H00{hc[4:6] if len(hc)>=6 else 'FF'}{hc[2:4] if len(hc)>=4 else 'FF'}{hc[0:2]}"
-            _oc = style.get('strokeColor', '#000000').lstrip('#')
-            if len(_oc) == 3:
-                _oc = ''.join(c*2 for c in _oc)
-            oc_ass = f"&H00{_oc[4:6] if len(_oc)>=6 else 'FF'}{_oc[2:4] if len(_oc)>=4 else 'FF'}{_oc[0:2]}"
+            font_size = max(12, min(96, style.get('fontSize', 44)))
+            pos_y = style.get('positionY', 78)
+            margin_v = max(0, min(200, int(100 - pos_y * 0.9)))
+            pc_ass = hex_to_ass_bbggrr(style.get('color', '#ffffff'))
+            sc_ass = hex_to_ass_bbggrr(dim_color(style.get('color', '#ffffff'), 0.35))
+            oc_ass = hex_to_ass_bbggrr(style.get('strokeColor', '#000000'))
             bold_val = -1 if style.get('fontWeight', '400') in ('700', '800', '900') else 0
 
             force_style = (
@@ -2062,10 +2087,12 @@ async def export_clip(req: ExportRequest, user: dict = Depends(get_current_user)
                 f"PrimaryColour={pc_ass},"
                 f"SecondaryColour={sc_ass},"
                 f"OutlineColour={oc_ass},"
+                f"BackColour=&H80000000,"
                 f"Outline={outline_width},"
                 f"MarginV={margin_v},"
                 f"Bold={bold_val},"
-                f"BorderStyle=1"
+                f"BorderStyle=3,"
+                f"Shadow=0"
             )
             vf = f"{vf},subtitles={ass_path}:force_style='{force_style}'"
 
