@@ -838,10 +838,11 @@ def dim_color(hex_color, factor=0.35):
 def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
     """Generate ASS subtitles in viral YouTube Shorts style.
 
-    Each phrase generates cumulative dialogue lines — one per word position.
-    Past words are shown in PrimaryColour (white), the current word in a
-    highlight colour, and future words in a dimmed version. A semi-transparent
-    box (BorderStyle=3) provides the classic viral-short reading background.
+    Each phrase generates one dialogue line per word position using \\k karaoke
+    timing tags for the smooth left-to-right fill animation.  Past words are
+    white, the current word animates dim → highlight colour, and future words
+    are dim.  A semi-transparent box (BorderStyle=3) provides the classic
+    viral-short reading background.
     """
     clip_words = [w for w in words if w['start'] >= clip_start and w['end'] <= clip_end]
     if not clip_words:
@@ -912,10 +913,11 @@ def generate_ass_karaoke(words, clip_start, clip_end, output_path, style=None):
                 wt = wd['word'].strip()
                 if not wt:
                     continue
+                duration_cs = max(1, int(round((wd['end'] - wd['start']) * 100)))
                 if j < i:
                     text_parts.append(f"{{\\c{primary_color}}}{wt}")
                 elif j == i:
-                    text_parts.append(f"{{\\c{highlight_color}}}{wt}")
+                    text_parts.append(f"{{\\c{highlight_color}\\k{duration_cs}}}{wt}")
                 else:
                     text_parts.append(f"{{\\c{secondary_color}}}{wt}")
 
@@ -1327,16 +1329,14 @@ def process_video_background(job_id: str, user_id: str, url: str):
             'bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/best[height<=2160]/best',
             # 1080p
             'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]/best',
-            # WebM best
-            'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best',
+            # WebM best >= 720p
+            'bestvideo[height>=720]+bestaudio/best[height>=720]/best',
             # Best MP4
             'best[ext=mp4]/best',
-            # Any format
-            'bestvideo+bestaudio/best',
-            # H.264 specifically
-            'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]',
-            # Fallback to any
-            'best',
+            # H.264 720p+
+            'bv[ext=mp4][vcodec^=avc1][height>=720]+ba[ext=m4a]/b[ext=mp4]',
+            # Last resort — any 720p+
+            'bestvideo[height>=720]+bestaudio/best',
         ]
         impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
 
@@ -1440,6 +1440,22 @@ def process_video_background(job_id: str, user_id: str, url: str):
                             _head = _f.read(500)
                         print(f"yt-dlp output too small ({os.path.getsize(video_path)} bytes): {_head[:200]}")
                     raise Exception("File not downloaded or too small")
+                # Verify resolution — reject below 720p
+                try:
+                    probe = subprocess.run(
+                        ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                         '-show_entries', 'stream=height', '-of', 'csv=p=0', video_path],
+                        capture_output=True, text=True, timeout=15
+                    )
+                    if probe.returncode == 0 and probe.stdout.strip():
+                        h = int(probe.stdout.strip())
+                        if h < 720:
+                            print(f"yt-dlp attempt {attempt+1}: resolution {h}p too low, retrying...")
+                            os.remove(video_path)
+                            raise Exception(f"Resolution {h}p below 720p threshold")
+                        print(f"yt-dlp attempt {attempt+1}: OK resolution={h}p")
+                except (ValueError, subprocess.TimeoutExpired, OSError) as probe_err:
+                    print(f"yt-dlp attempt {attempt+1}: probe warning ({probe_err}), accepting file")
                 last_err = None
                 break
             except TimeoutError:
