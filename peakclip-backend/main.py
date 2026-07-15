@@ -443,7 +443,7 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ
         async with httpx.AsyncClient(timeout=30) as client:
             update_res = await client.put(
                 f"https://{project_ref}.supabase.co/storage/v1/bucket/clips",
-                json={"public": False},
+                json={"public": False, "allowed_mime_types": ["video/mp4", "video/webm", "video/quicktime", "image/jpeg", "image/png", "text/plain", "application/json"]},
                 headers={"Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
             )
             if update_res.status_code in (200, 201, 204):
@@ -759,7 +759,7 @@ def format_srt_time(seconds: float) -> str:
 
 def generate_srt_subtitle(words, clip_start, clip_end, output_path):
     """Generate SRT phrase-level subtitles grouped into natural reading chunks."""
-    clip_words = [w for w in words if w['start'] >= clip_start and w['end'] <= clip_end]
+    clip_words = [w for w in words if w['start'] < clip_end and w['end'] > clip_start]
     if not clip_words:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write("")
@@ -1924,6 +1924,7 @@ Return JSON with this exact format:
                     continue
 
                 output_clips.append({
+                    "id": clip_id,
                     "clip": i + 1,
                     "title": clip["title"],
                     "reason": clip["reason"],
@@ -1947,11 +1948,17 @@ Return JSON with this exact format:
             jobs_store[job_id] = {"status": "error", "message": "All clip uploads failed. Check Supabase Storage permissions/bucket."}
             raise Exception("All clip uploads failed")
 
-        jobs_store[job_id] = {"status": "done", "message": f"{len(output_clips)} clips ready", "clips": output_clips}
+        jobs_store[job_id] = {
+            "status": "done",
+            "message": f"{len(output_clips)} clips ready",
+            "clips": output_clips,
+            "subtitle_words": words_data if words_data else None
+        }
         return {
             "job_id": job_id,
             "clips": output_clips,
-            "total": len(output_clips)
+            "total": len(output_clips),
+            "subtitle_words": words_data if words_data else None
         }
 
 
@@ -2663,6 +2670,7 @@ Return JSON with this exact format:
                     raise
 
             output_clips.append({
+                "id": clip_id,
                 "clip": i + 1,
                 "title": clip["title"],
                 "reason": clip["reason"],
@@ -2679,7 +2687,11 @@ Return JSON with this exact format:
             jobs_store[job_id] = {"status": "error", "message": "All clip uploads failed. Check Supabase Storage permissions/bucket."}
             raise Exception("All clip uploads failed")
 
-        jobs_store[job_id] = {"status": "done", "message": f"{len(output_clips)} clips ready"}
+        jobs_store[job_id] = {
+            "status": "done",
+            "message": f"{len(output_clips)} clips ready",
+            "subtitle_words": words_data if words_data else None
+        }
     except Exception as e:
         jobs_store[job_id] = {"status": "error", "message": str(e)[:200]}
         raise
