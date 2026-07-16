@@ -722,7 +722,7 @@ export default function EditorPage() {
   // --- RENDER PLAYBACK LOOP ---
   useEffect(() => {
     let animId
-    const update = async () => {
+    const update = () => {
       try {
         const isMobile = window.innerWidth <= 768
         let time = 0
@@ -736,7 +736,7 @@ export default function EditorPage() {
           lastTimeUpdateRef.current = time
         }
         if (time > 0 && !isMobile && videoRef.current && faceTrackingEnabled) {
-          await detectFace()
+          detectFace()
         }
       } catch (e) {
         console.warn('Animation loop error:', e)
@@ -1620,7 +1620,6 @@ export default function EditorPage() {
                 ref={videoRef}
                 src={displayVideoSrc}
                 loop
-                controls
                 playsInline
                 preload='metadata'
                 onPlay={() => setIsPlaying(true)}
