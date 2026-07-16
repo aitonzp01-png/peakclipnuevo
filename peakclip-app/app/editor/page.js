@@ -375,6 +375,23 @@ export default function EditorPage() {
                 console.warn('Failed to fetch SRT from url:', e)
               }
             }
+            if (segments.length === 0) {
+              const fallbackWords = rawTranscript.length > 0 ? rawTranscript : generateEnglishTranscript(clipDuration)
+              const phrases = groupWordsIntoPhrases(fallbackWords)
+              segments = phrases.map(phrase => {
+                const first = phrase[0]
+                const last = phrase[phrase.length - 1]
+                return { start: first.startTime, end: last.endTime, text: phrase.map(w => w.word).join(' ') }
+              })
+            }
+            console.log('SUBTITLE DEBUG:', {
+              hasSubtitlesSrt: !!clipData.subtitles_srt,
+              hasSrtUrl: !!clipData.srt_url,
+              segmentsCount: segments.length,
+              firstSeg: segments[0],
+              preset: toComponentPreset(selectedPresetId),
+              currentTime
+            })
             setParsedSRT(segments)
 
             if (clipData.subtitle_style) {
