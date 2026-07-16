@@ -23,6 +23,22 @@ export function groupWordsIntoPhrases(words) {
   return phrases
 }
 
+function buildStroke(width, color) {
+  if (!width || width === 0 || !color) return 'none'
+  const c = color
+  const w = Math.max(1, Math.round(width))
+  return [
+    `${c} -${w}px -${w}px 0`,
+    `${c} 0 -${w}px 0`,
+    `${c} ${w}px -${w}px 0`,
+    `${c} -${w}px 0 0`,
+    `${c} ${w}px 0 0`,
+    `${c} -${w}px ${w}px 0`,
+    `${c} 0 ${w}px 0`,
+    `${c} ${w}px ${w}px 0`,
+  ].join(', ')
+}
+
 export default function WordByWordOverlay({ words, currentTime, subtitleStyle, presetId }) {
   if (!words || words.length === 0 || presetId === 'none') return null
 
@@ -31,36 +47,52 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   if (activePhraseIdx === -1) return null
 
   const activePhrase = phrases[activePhraseIdx]
-  // Show words progressively: only words that have started + 1 upcoming
   const wordsToDraw = activePhrase.filter(w => !w.deleted && w.startTime <= currentTime + 1.0)
   if (!wordsToDraw.length) return null
 
   const {
-    fontFamily = 'Montserrat',
-    fontSize = 30,
-    fontWeight = '700',
+    fontFamily = 'Arial Black',
+    fontSize = 26,
+    fontWeight = '900',
     color = '#ffffff',
     highlightColor = '#ff1f1f',
-    stroke = false,
+    stroke = true,
     strokeColor = '#000000',
-    strokeWidth = 3,
-    positionY = 78,
+    strokeWidth = 4,
+    positionY = 85,
     fontStyle = 'normal',
     textTransform = 'none',
-    maxWidth = 85,
+    maxWidth = 88,
+    shadow = false,
   } = subtitleStyle || {}
 
-  // Preset overrides
+  // Determine colors per preset (YouTube Shorts style: past words dim white, active word highlighted)
   let activeColor = color
   let pastColor = color
   let futureColor = color
-  let activeHighlight = highlightColor
   let useStroke = stroke
   let useStrokeColor = strokeColor
   let useStrokeWidth = strokeWidth
+  let bgStyle = {}
+  let wordSpacing = ' '
 
   switch (presetId) {
     case 'karaoke':
+      activeColor = highlightColor
+      pastColor = color
+      futureColor = '#ffffff'
+      useStroke = true
+      useStrokeColor = '#000000'
+      useStrokeWidth = 4
+      bgStyle = { background: 'rgba(0,0,0,0.4)', borderRadius: '8px', padding: '8px 16px' }
+      break
+    case 'beasty':
+      activeColor = '#000000'
+      pastColor = '#ffffff'
+      futureColor = '#ffffff'
+      bgStyle = { background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '6px 14px' }
+      break
+    case 'youshaei':
       activeColor = highlightColor
       pastColor = color
       futureColor = color
@@ -68,89 +100,97 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
       useStrokeColor = '#000000'
       useStrokeWidth = 3
       break
-    case 'beasty':
-      activeColor = '#000000'
-      pastColor = '#ffffff'
-      futureColor = '#ffffff'
-      break
-    case 'youshaei':
-      activeColor = highlightColor
-      pastColor = color
-      futureColor = color
-      break
     case 'popline':
       activeColor = '#000000'
       pastColor = '#ffffff'
       futureColor = '#ffffff'
       useStroke = true
       useStrokeColor = '#000000'
-      useStrokeWidth = 2
+      useStrokeWidth = 3
+      bgStyle = { background: 'rgba(0,0,0,0.5)', borderRadius: '4px', padding: '6px 14px' }
       break
     case 'mozi':
-      activeColor = color
-      pastColor = color
-      futureColor = color
+      activeColor = '#ffffff'
+      pastColor = 'rgba(255,255,255,0.7)'
+      futureColor = 'rgba(255,255,255,0.3)'
       useStroke = true
       useStrokeColor = '#000000'
       useStrokeWidth = 4
+      bgStyle = { background: 'linear-gradient(135deg, rgba(124,58,237,0.7), rgba(219,39,119,0.7))', borderRadius: '8px', padding: '6px 16px' }
       break
     case 'deepdiver':
     case 'deep_diver':
-      activeColor = '#ffffff'
+      activeColor = '#4488ff'
+      pastColor = color
+      futureColor = color
+      useStroke = true
+      useStrokeColor = 'rgba(0,0,0,0.6)'
+      useStrokeWidth = 3
+      bgStyle = { background: 'rgba(10,20,80,0.6)', borderRadius: '6px', padding: '6px 16px', borderLeft: '3px solid #4488ff' }
+      break
+    case 'podp':
+    case 'pod_p':
+      activeColor = '#ff1f1f'
       pastColor = '#ffffff'
       futureColor = '#ffffff'
-      useStroke = true
-      useStrokeColor = 'rgba(0,0,0,0.5)'
-      useStrokeWidth = 2
+      useStroke = false
+      bgStyle = { background: 'rgba(0,0,0,0.6)', borderRadius: '6px', padding: '6px 14px' }
       break
     default:
+      // YouTube Shorts default: clean white with red highlight, black outline
+      activeColor = highlightColor
+      pastColor = 'rgba(255,255,255,0.8)'
+      futureColor = 'rgba(255,255,255,0.3)'
+      useStroke = true
+      useStrokeColor = '#000000'
+      useStrokeWidth = 4
+      bgStyle = { background: 'rgba(0,0,0,0.35)', borderRadius: '8px', padding: '8px 16px' }
       break
   }
 
-  // Build display lines
-  const lines = []
-  let line = []
-  let lineWidth = 0
-  const maxLineChars = Math.floor((maxWidth / 100) * 30) // rough char estimate
+  // Build display lines using canvas measurement for accuracy
+  let lines = []
+  let currentLine = []
+  let currentLineWidth = 0
+
+  // Use a pixel-based max width (approximate)
+  const containerMaxWidth = (maxWidth / 100) * 700
 
   for (const w of wordsToDraw) {
     let wordText = w.word
     if (textTransform === 'uppercase') wordText = wordText.toUpperCase()
     if (textTransform === 'lowercase') wordText = wordText.toLowerCase()
-    const ww = wordText.length + 1
-    if (lineWidth + ww > maxLineChars && line.length > 0) {
-      lines.push(line)
-      line = [{ word: w, text: wordText }]
-      lineWidth = ww
+    // Rough char-width based on fontSize (for Arial Black, ~0.65 * fontSize per char)
+    const charWidth = fontSize * 0.6
+    const wordPixelWidth = wordText.length * charWidth + charWidth * 0.5
+
+    if (currentLineWidth + wordPixelWidth > containerMaxWidth && currentLine.length > 0) {
+      lines.push(currentLine)
+      currentLine = [{ word: w, text: wordText, pixelWidth: wordPixelWidth }]
+      currentLineWidth = wordPixelWidth
     } else {
-      line.push({ word: w, text: wordText })
-      lineWidth += ww
+      currentLine.push({ word: w, text: wordText, pixelWidth: wordPixelWidth })
+      currentLineWidth += wordPixelWidth
     }
   }
-  if (line.length > 0) lines.push(line)
+  if (currentLine.length > 0) lines.push(currentLine)
 
-  const lineHeight = fontSize * 1.3
-  const totalHeight = lines.length * lineHeight
-  const basePosition = positionY // 0-100
-  const topOffset = `${basePosition}%`
-
-  const textShadow = useStroke
-    ? `${useStrokeColor} 0px 0px ${useStrokeWidth}px, ${useStrokeColor} 0px 0px ${useStrokeWidth}px, ${useStrokeColor} 0px 0px ${useStrokeWidth}px`
-    : 'none'
+  const lineHeight = fontSize * 1.35
+  const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
 
   const containerStyle = {
     position: 'absolute',
-    left: 0,
-    right: 0,
+    left: '50%',
+    bottom: `${100 - positionY}%`,
+    transform: 'translateX(-50%)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
     pointerEvents: 'none',
     zIndex: 10,
-    top: topOffset,
-    transform: 'translateY(-50%)',
-    padding: '0 8%',
+    width: `${maxWidth}%`,
+    maxWidth: '700px',
   }
 
   const wordStyle = {
@@ -160,24 +200,24 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     fontWeight,
     fontStyle,
     lineHeight: `${lineHeight}px`,
-    textShadow,
-    transition: 'color 0.15s ease',
+    textShadow: textShadowVal,
+    transition: 'color 0.1s ease, opacity 0.1s ease',
     whiteSpace: 'pre-wrap',
   }
 
   return (
     <div style={containerStyle}>
       {lines.map((lineWords, li) => (
-        <div key={li} style={{ textAlign: 'center', maxWidth: `${maxWidth}%` }}>
+        <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
           {lineWords.map((lw, wi) => {
             const isPast = currentTime > lw.word.endTime
             const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
             const isFuture = currentTime < lw.word.startTime
             let wordColor = futureColor
-            let opacity = 0.2
+            let opacity = 0.25
             if (isPast) {
               wordColor = pastColor
-              opacity = 0.6
+              opacity = 0.75
             }
             if (isActive) {
               wordColor = activeColor
@@ -192,7 +232,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
                   opacity,
                 }}
               >
-                {lw.text}{' '}
+                {lw.text}{wordSpacing}
               </span>
             )
           })}
