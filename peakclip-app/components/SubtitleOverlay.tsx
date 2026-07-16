@@ -363,10 +363,7 @@ export function SubtitleOverlay({
   }, [currentSeg?.text, style]);
 
   if (style === "none") return null;
-  if (!currentSeg) {
-    console.log('SubtitleOverlay: no currentSeg for time', currentTime, 'segments:', parsedSRT.length, parsedSRT.slice(0, 2))
-    return null;
-  }
+  if (!currentSeg) return null;
 
   const cfg = STYLE_CONFIGS[style] || STYLE_CONFIGS.youshaei;
 
@@ -428,7 +425,6 @@ export function SubtitleOverlay({
   }
 
   // ── Resto de estilos ──
-  console.log(`SubtitleOverlay: RENDERING style="${style}" text="${displayText.slice(0, 50)}" time=${currentTime}`)
   return (
     <div style={positionStyle}>
       <div style={cfg.wrapper}>

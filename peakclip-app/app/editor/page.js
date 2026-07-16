@@ -384,14 +384,6 @@ export default function EditorPage() {
                 return { start: first.startTime, end: last.endTime, text: phrase.map(w => w.word).join(' ') }
               })
             }
-            console.log('SUBTITLE DEBUG:', {
-              hasSubtitlesSrt: !!clipData.subtitles_srt,
-              hasSrtUrl: !!clipData.srt_url,
-              segmentsCount: segments.length,
-              firstSeg: segments[0],
-              preset: toComponentPreset(selectedPresetId),
-              currentTime
-            })
             setParsedSRT(segments)
 
             if (clipData.subtitle_style) {
@@ -1628,11 +1620,23 @@ export default function EditorPage() {
                 ref={videoRef}
                 src={displayVideoSrc}
                 loop
+                controls
+                playsInline
+                preload='metadata'
                 onPlay={() => setIsPlaying(true)}
                 onPause={() => setIsPlaying(false)}
                 onEnded={() => setIsPlaying(false)}
                 onLoadedMetadata={() => {
                   if (videoRef.current?.duration) setDuration(videoRef.current.duration)
+                }}
+                onError={(e) => {
+                  const originalSrc = e?.currentTarget?.src || displayVideoSrc
+                  const normalizedSrc = normalizeVideoUrl(originalSrc)
+                  if (normalizedSrc !== originalSrc && !videoError) {
+                    setDisplayVideoSrc(normalizedSrc)
+                  } else {
+                    setVideoError(true)
+                  }
                 }}
                 style={{
                   width: '100%',
