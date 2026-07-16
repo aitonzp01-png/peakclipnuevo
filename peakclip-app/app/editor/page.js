@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { getSupabaseClient } from '../../lib/supabase'
 import { exportClip } from '../../lib/api'
-import { SubtitleOverlay, parseSRT } from '../../components/SubtitleOverlay'
+import WordByWordOverlay from '../../components/WordByWordOverlay'
 import ExportModal from './components/ExportModal'
 import ErrorBoundary from '../../lib/error-boundary'
 import './editor.css'
@@ -115,7 +115,6 @@ export default function EditorPage() {
   // SRT modal state
   const [srtInputText, setSrtInputText] = useState('')
   const [showSrtModal, setShowSrtModal] = useState(false)
-  const [parsedSRT, setParsedSRT] = useState([])
 
   // Panels & tabs
   const [leftPanelOpen, setLeftPanelOpen] = useState(true)
@@ -132,7 +131,7 @@ export default function EditorPage() {
   const [selectedPresetId, setSelectedPresetId] = useState('viralshort')
   const [subtitleStyle, setSubtitleStyle] = useState({
     fontFamily: 'Montserrat',
-    fontSize: 44,
+    fontSize: 26,
     fontWeight: '900',
     color: '#ffffff',
     backgroundColor: 'transparent',
@@ -359,32 +358,6 @@ export default function EditorPage() {
               setTranscriptES(generateSpanishTranscript(defaultEN))
               setActiveTranscript(defaultEN)
             }
-
-            // Parse SRT for SubtitleOverlay rendering
-            let segments = []
-            if (clipData.subtitles_srt) {
-              segments = parseSRT(clipData.subtitles_srt)
-            } else if (clipData.srt_url) {
-              try {
-                const res = await fetch(clipData.srt_url)
-                if (res.ok) {
-                  const srtText = await res.text()
-                  segments = parseSRT(srtText)
-                }
-              } catch (e) {
-                console.warn('Failed to fetch SRT from url:', e)
-              }
-            }
-            if (segments.length === 0) {
-              const fallbackWords = rawTranscript.length > 0 ? rawTranscript : generateEnglishTranscript(clipDuration)
-              const phrases = groupWordsIntoPhrases(fallbackWords)
-              segments = phrases.map(phrase => {
-                const first = phrase[0]
-                const last = phrase[phrase.length - 1]
-                return { start: first.startTime, end: last.endTime, text: phrase.map(w => w.word).join(' ') }
-              })
-            }
-            setParsedSRT(segments)
 
             if (clipData.subtitle_style) {
               setSubtitleStyle(prev => ({ ...prev, ...clipData.subtitle_style }))
@@ -648,22 +621,6 @@ export default function EditorPage() {
       setTextOverlays(state.textOverlays)
       triggerToast('success', 'Redo completed')
     }
-  }
-
-  // --- SUBTITLE PRESET NAME MAPPER ---
-  const toComponentPreset = (id) => {
-    const map = {
-      'deepdiver': 'deep_diver',
-      'podp': 'pod_p',
-      'none': 'none',
-      'karaoke': 'karaoke',
-      'beasty': 'beasty',
-      'youshaei': 'youshaei',
-      'mozi': 'mozi',
-      'popline': 'popline',
-      'typewriter': 'typewriter'
-    }
-    return map[id] || 'youshaei'
   }
 
   // --- LERP & FACE DETECTION LOOP ---
@@ -1646,14 +1603,11 @@ export default function EditorPage() {
               />
 
               {/* Subtitles */}
-              <SubtitleOverlay
-                parsedSRT={parsedSRT}
+              <WordByWordOverlay
+                words={activeTranscript}
                 currentTime={currentTime}
-                style={toComponentPreset(selectedPresetId)}
-                fontSize={subtitleStyle.fontSize}
-                color={subtitleStyle.color}
-                bold={parseInt(subtitleStyle.fontWeight) >= 700}
-                position={subtitleStyle.positionY < 33 ? 'top' : subtitleStyle.positionY < 66 ? 'middle' : 'bottom'}
+                subtitleStyle={subtitleStyle}
+                presetId={selectedPresetId}
               />
 
               {/* Face Tracker */}
@@ -2321,14 +2275,11 @@ export default function EditorPage() {
       </header>
 
       <div className='editor-mobile-video-wrap'>
-        <SubtitleOverlay
-          parsedSRT={parsedSRT}
+        <WordByWordOverlay
+          words={activeTranscript}
           currentTime={currentTime}
-          style={toComponentPreset(selectedPresetId)}
-          fontSize={subtitleStyle.fontSize}
-          color={subtitleStyle.color}
-          bold={parseInt(subtitleStyle.fontWeight) >= 700}
-          position={subtitleStyle.positionY < 33 ? 'top' : subtitleStyle.positionY < 66 ? 'middle' : 'bottom'}
+          subtitleStyle={subtitleStyle}
+          presetId={selectedPresetId}
         />
         {videoError ? (
           <div className='editor-mobile-video-error'>
