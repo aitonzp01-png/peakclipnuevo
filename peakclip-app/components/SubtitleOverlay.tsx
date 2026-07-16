@@ -319,10 +319,13 @@ export function SubtitleOverlay({
   const [typewriterText, setTypewriterText] = useState("");
   const typewriterRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Encontrar segmento actual
-  const currentSeg = parsedSRT.find(
+  // Encontrar segmento actual — si currentTime es menor al inicio del primero, mostrar el primero
+  let currentSeg = parsedSRT.find(
     (seg) => currentTime >= seg.start && currentTime <= seg.end
   );
+  if (!currentSeg && parsedSRT.length > 0 && currentTime < parsedSRT[0].start) {
+    currentSeg = parsedSRT[0];
+  }
 
   // Para karaoke: encontrar palabra actual dentro del segmento
   const currentWord = currentSeg?.words?.find(
