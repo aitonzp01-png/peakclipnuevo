@@ -1,5 +1,7 @@
 'use client'
 
+import { useRef } from 'react'
+
 export function groupWordsIntoPhrases(words) {
   const active = words.filter(w => !w.deleted).sort((a, b) => a.startTime - b.startTime)
   const phrases = []
@@ -50,9 +52,26 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   const wordsToDraw = activePhrase.filter(w => !w.deleted && w.startTime <= currentTime + 1.0)
   if (!wordsToDraw.length) return null
 
+  // Merge adjacent sub-word fragments from Whisper BPE tokenization
+  const mergedWords = []
+  for (const w of wordsToDraw) {
+    if (mergedWords.length === 0) {
+      mergedWords.push({ ...w })
+    } else {
+      const last = mergedWords[mergedWords.length - 1]
+      const gap = w.startTime - last.endTime
+      if (gap < 0.1) {
+        last.word = last.word + w.word
+        last.endTime = w.endTime
+      } else {
+        mergedWords.push({ ...w })
+      }
+    }
+  }
+
   const {
     fontFamily = 'Arial Black',
-    fontSize = 26,
+    fontSize = 32,
     fontWeight = '900',
     color = '#ffffff',
     highlightColor = '#ff1f1f',
@@ -64,88 +83,41 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     textTransform = 'none',
     maxWidth = 88,
     shadow = false,
+    shadowColor = '#000000',
+    shadowBlur = 0,
+    gradient: useGradient = false,
+    gradientColors = ['#ff6b6b', '#ffd93d'],
+    animation: textAnimation = 'none',
+    letterSpacing = 0,
+    karaokeHighlight = false,
+    backgroundOpacity = 0,
+    backgroundColor = 'transparent',
+    backgroundBorderRadius = 6,
   } = subtitleStyle || {}
 
-  // Determine colors per preset (YouTube Shorts style: past words dim white, active word highlighted)
-  let activeColor = color
+  // Colors: karaoke mode uses highlightColor for active word
+  let activeColor = karaokeHighlight ? highlightColor : color
   let pastColor = color
   let futureColor = color
-  let useStroke = stroke
-  let useStrokeColor = strokeColor
-  let useStrokeWidth = strokeWidth
-  let bgStyle = {}
-  let wordSpacing = ' '
+  let useStroke = stroke !== false
+  let useStrokeColor = strokeColor || '#000000'
+  let useStrokeWidth = Math.max(1, strokeWidth || 0)
 
-  switch (presetId) {
-    case 'karaoke':
-      activeColor = highlightColor
-      pastColor = color
-      futureColor = '#ffffff'
-      useStroke = true
-      useStrokeColor = '#000000'
-      useStrokeWidth = 4
-      bgStyle = { background: 'rgba(0,0,0,0.4)', borderRadius: '8px', padding: '8px 16px' }
-      break
-    case 'beasty':
-      activeColor = '#000000'
-      pastColor = '#ffffff'
-      futureColor = '#ffffff'
-      bgStyle = { background: 'rgba(0,0,0,0.3)', borderRadius: '6px', padding: '6px 14px' }
-      break
-    case 'youshaei':
-      activeColor = highlightColor
-      pastColor = color
-      futureColor = color
-      useStroke = true
-      useStrokeColor = '#000000'
-      useStrokeWidth = 3
-      break
-    case 'popline':
-      activeColor = '#000000'
-      pastColor = '#ffffff'
-      futureColor = '#ffffff'
-      useStroke = true
-      useStrokeColor = '#000000'
-      useStrokeWidth = 3
-      bgStyle = { background: 'rgba(0,0,0,0.5)', borderRadius: '4px', padding: '6px 14px' }
-      break
-    case 'mozi':
-      activeColor = '#ffffff'
-      pastColor = 'rgba(255,255,255,0.7)'
-      futureColor = 'rgba(255,255,255,0.3)'
-      useStroke = true
-      useStrokeColor = '#000000'
-      useStrokeWidth = 4
-      bgStyle = { background: 'linear-gradient(135deg, rgba(124,58,237,0.7), rgba(219,39,119,0.7))', borderRadius: '8px', padding: '6px 16px' }
-      break
-    case 'deepdiver':
-    case 'deep_diver':
-      activeColor = '#4488ff'
-      pastColor = color
-      futureColor = color
-      useStroke = true
-      useStrokeColor = 'rgba(0,0,0,0.6)'
-      useStrokeWidth = 3
-      bgStyle = { background: 'rgba(10,20,80,0.6)', borderRadius: '6px', padding: '6px 16px', borderLeft: '3px solid #4488ff' }
-      break
-    case 'podp':
-    case 'pod_p':
-      activeColor = '#ff1f1f'
-      pastColor = '#ffffff'
-      futureColor = '#ffffff'
-      useStroke = false
-      bgStyle = { background: 'rgba(0,0,0,0.6)', borderRadius: '6px', padding: '6px 14px' }
-      break
-    default:
-      // YouTube Shorts default: clean white with red highlight, black outline
-      activeColor = highlightColor
-      pastColor = 'rgba(255,255,255,0.8)'
-      futureColor = 'rgba(255,255,255,0.3)'
-      useStroke = true
-      useStrokeColor = '#000000'
-      useStrokeWidth = 4
-      bgStyle = { background: 'rgba(0,0,0,0.35)', borderRadius: '8px', padding: '8px 16px' }
-      break
+  // Build background plate from subtitleStyle props
+  let bgStyle = {}
+  if (backgroundColor && backgroundColor !== 'transparent' && backgroundOpacity > 0) {
+    const a = Math.min(1, Math.max(0, backgroundOpacity / 100))
+    const hex = backgroundColor.replace('#', '')
+    const r = parseInt(hex.substring(0, 2), 16)
+    const g = parseInt(hex.substring(2, 4), 16)
+    const b = parseInt(hex.substring(4, 6), 16)
+    if (!isNaN(r)) {
+      bgStyle = {
+        background: `rgba(${r},${g},${b},${a})`,
+        borderRadius: `${backgroundBorderRadius || 6}px`,
+        padding: '6px 14px',
+      }
+    }
   }
 
   // Build display lines using canvas measurement for accuracy
@@ -156,7 +128,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   // Use a pixel-based max width (approximate)
   const containerMaxWidth = (maxWidth / 100) * 700
 
-  for (const w of wordsToDraw) {
+  for (const w of mergedWords) {
     let wordText = w.word
     if (textTransform === 'uppercase') wordText = wordText.toUpperCase()
     if (textTransform === 'lowercase') wordText = wordText.toLowerCase()
@@ -178,6 +150,19 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   const lineHeight = fontSize * 1.35
   const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
 
+  // Glow: extra blurred text-shadow when enabled
+  let extraGlow = ''
+  if (shadow && shadowBlur > 0 && shadowColor) {
+    extraGlow = `0 0 ${shadowBlur}px ${shadowColor}`
+  }
+
+  // Animation: track phrase changes to trigger fade-in
+  const prevPhraseRef = useRef(-1)
+  const phraseChanged = activePhraseIdx !== prevPhraseRef.current
+  if (phraseChanged) {
+    prevPhraseRef.current = activePhraseIdx
+  }
+
   const containerStyle = {
     position: 'absolute',
     left: '50%',
@@ -191,6 +176,11 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     zIndex: 10,
     width: `${maxWidth}%`,
     maxWidth: '700px',
+    overflow: 'visible',
+    wordBreak: 'normal',
+    overflowWrap: 'normal',
+    WebkitHyphens: 'none',
+    hyphens: 'none',
   }
 
   const wordStyle = {
@@ -200,44 +190,66 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     fontWeight,
     fontStyle,
     lineHeight: `${lineHeight}px`,
-    textShadow: textShadowVal,
+    textShadow: extraGlow ? `${extraGlow}, ${textShadowVal}` : textShadowVal,
     transition: 'color 0.1s ease, opacity 0.1s ease',
     whiteSpace: 'pre-wrap',
+    letterSpacing: letterSpacing ? `${letterSpacing}px` : 'normal',
+    wordBreak: 'keep-all',
+    overflowWrap: 'normal',
   }
 
   return (
     <div style={containerStyle}>
-      {lines.map((lineWords, li) => (
-        <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
-          {lineWords.map((lw, wi) => {
-            const isPast = currentTime > lw.word.endTime
-            const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
-            const isFuture = currentTime < lw.word.startTime
-            let wordColor = futureColor
-            let opacity = 0.25
-            if (isPast) {
-              wordColor = pastColor
-              opacity = 0.75
-            }
-            if (isActive) {
-              wordColor = activeColor
-              opacity = 1
-            }
-            return (
-              <span
-                key={wi}
-                style={{
-                  ...wordStyle,
-                  color: wordColor,
-                  opacity,
-                }}
-              >
-                {lw.text}{wordSpacing}
-              </span>
-            )
-          })}
-        </div>
-      ))}
+      {lines.map((lineWords, li) => {
+        const isCurrentLine = lines[activePhraseIdx] === lineWords
+        const lineAnimStyle = textAnimation === 'fade' && isCurrentLine && phraseChanged ? {
+          animation: 'wordFadeIn 0.25s ease-out',
+        } : {}
+
+        const gradientLineStyle = useGradient ? {
+          background: `linear-gradient(135deg, ${gradientColors[0]}, ${gradientColors[1]})`,
+          WebkitBackgroundClip: 'text',
+          WebkitTextFillColor: 'transparent',
+          backgroundClip: 'text',
+        } : {}
+
+        return (
+          <div key={li} style={{ textAlign: 'center', ...bgStyle, ...gradientLineStyle, ...lineAnimStyle }}>
+            {lineWords.map((lw, wi) => {
+              const isPast = currentTime > lw.word.endTime
+              const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
+              const isFuture = currentTime < lw.word.startTime
+              let opacity = 0.25
+              if (isPast) opacity = 0.7
+              if (isActive) opacity = 1
+              if (isFuture) opacity = 0.25
+
+              const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
+
+              const wordGradientStyle = useGradient ? {
+                WebkitTextFillColor: isActive ? activeColor : 'transparent',
+                color: 'transparent',
+              } : { color: wordColor }
+
+              return (
+                <span
+                  key={wi}
+                  style={{
+                    ...wordStyle,
+                    ...wordGradientStyle,
+                    opacity,
+                  }}
+                >
+                  {lw.text}{' '}
+                </span>
+              )
+            })}
+          </div>
+        )
+      })}
+      {textAnimation === 'fade' && (
+        <style>{`@keyframes wordFadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+      )}
     </div>
   )
 }

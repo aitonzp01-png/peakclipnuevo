@@ -33,21 +33,15 @@ const FONTS = [
 
 const SUBTITLE_PRESETS = [
   { id: 'none', name: 'No captions', isNone: true },
-  { id: 'karaoke', name: 'Karaoke', color: '#ffffff', highlightColor: '#ff1f1f', fontWeight: '800', karaokeHighlight: true },
-  { id: 'beasty', name: 'Beasty', color: '#0a0a0a', backgroundColor: '#ff1f1f', backgroundOpacity: 100, fontWeight: '900', textTransform: 'uppercase' },
-  { id: 'deepdiver', name: 'Deep Diver', color: '#ffffff', backgroundColor: '#18181b', backgroundOpacity: 70, fontWeight: '600' },
-  { id: 'youshaei', name: 'Youshaei', color: '#ff1f1f', fontWeight: '800', fontStyle: 'italic', textTransform: 'uppercase' },
-  { id: 'podp', name: 'Pod P', color: '#ffffff', fontWeight: '700', lineHeight: 1.4, backgroundColor: '#000000', backgroundOpacity: 50 },
-  { id: 'mozi', name: 'Mozi', color: '#ffffff', stroke: true, strokeColor: '#0a0a0a', strokeWidth: 3, fontWeight: '800' },
-  { id: 'popline', name: 'Popline', color: '#0a0a0a', backgroundColor: '#ff1f1f', backgroundOpacity: 100, fontWeight: '800', textTransform: 'uppercase' },
-  { id: 'typewriter', name: 'Typewriter 1-by-1', color: '#ff1f1f', highlightColor: '#ff1f1f', fontWeight: '900', textTransform: 'uppercase', stroke: true, strokeColor: '#0a0a0a', strokeWidth: 5 },
-  { id: 'gradient', name: 'Gradient', color: '#ffffff', fontWeight: '800', fontStyle: 'normal', shadow: true, shadowColor: '#000000', shadowBlur: 6, shadowOffsetX: 2, shadowOffsetY: 2, stroke: true, strokeColor: '#000000', strokeWidth: 2 },
-  { id: 'neon', name: 'Neon Glow', color: '#00ff88', fontWeight: '900', shadow: true, shadowColor: '#00ff88', shadowBlur: 12, shadowOffsetX: 0, shadowOffsetY: 0, stroke: true, strokeColor: '#003322', strokeWidth: 2 },
-  { id: 'minimal', name: 'Minimal', color: '#ffffff', fontWeight: '300', letterSpacing: 2, textTransform: 'uppercase' },
-  { id: 'boldpod', name: 'Bold Pod', color: '#ffffff', fontWeight: '900', fontSize: 36, backgroundColor: '#000000', backgroundOpacity: 60, backgroundBorderRadius: 12, stroke: true, strokeColor: '#000000', strokeWidth: 1 },
-  { id: 'retro', name: 'Retro', color: '#ffcc00', fontFamily: 'Impact', fontWeight: '900', stroke: true, strokeColor: '#cc0000', strokeWidth: 4, textTransform: 'uppercase', letterSpacing: 1 },
-  { id: 'elegant', name: 'Elegant', color: '#d4af37', fontFamily: 'Playfair Display', fontWeight: '700', fontStyle: 'italic', lineHeight: 1.1, letterSpacing: 0.5, stroke: true, strokeColor: '#1a1a2e', strokeWidth: 1 },
-  { id: 'viralshort', name: 'Viral Shorts', color: '#ffffff', fontWeight: '900', fontSize: 44, backgroundColor: '#000000', backgroundOpacity: 50, backgroundBorderRadius: 12, stroke: true, strokeColor: '#000000', strokeWidth: 3, highlightColor: '#c4ff3d', karaokeHighlight: true }
+  { id: 'highlight', name: 'Highlight', color: '#ffffff', highlightColor: '#ff1f1f', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 4, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 35, backgroundBorderRadius: 8, fontFamily: 'Arial Black', fontSize: 32 },
+  { id: 'trending', name: 'Trending', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 4, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 6, fontFamily: 'Montserrat', fontSize: 30 },
+  { id: 'glow', name: 'Glow', color: '#ffffff', highlightColor: '#00ffcc', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, shadow: true, shadowColor: '#00ffcc', shadowBlur: 15, shadowOffsetX: 0, shadowOffsetY: 0, backgroundColor: '#000000', backgroundOpacity: 25, backgroundBorderRadius: 8, fontFamily: 'Montserrat', fontSize: 30 },
+  { id: 'aesthetic', name: 'Aesthetic', color: '#ffffff', highlightColor: '#ffffff', fontWeight: '300', stroke: false, karaokeHighlight: true, backgroundColor: 'transparent', backgroundOpacity: 0, fontFamily: 'Inter', fontSize: 24, letterSpacing: 1 },
+  { id: 'basic', name: 'Basic', color: '#ffffff', fontWeight: '700', stroke: false, backgroundColor: '#000000', backgroundOpacity: 70, backgroundBorderRadius: 4, fontFamily: 'Arial', fontSize: 28 },
+  { id: 'monoline', name: 'Monoline', color: '#ffffff', highlightColor: '#ff6b6b', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 5, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 40, backgroundBorderRadius: 10, fontFamily: 'Anton', fontSize: 40, maxWidth: 90 },
+  { id: 'multiline', name: 'Multiline', color: '#ffffff', fontWeight: '600', stroke: true, strokeColor: '#000000', strokeWidth: 2, backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 4, fontFamily: 'Inter', fontSize: 20, lineHeight: 1.3 },
+  { id: 'word', name: 'Word by Word', color: '#ffffff', highlightColor: '#ff1f1f', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 6, fontFamily: 'Poppins', fontSize: 28, animation: 'fade' },
+  { id: 'gradient', name: 'Gradient', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, gradient: true, gradientColors: ['#ff6b6b', '#ffd93d'], backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 6, fontFamily: 'Montserrat', fontSize: 28 },
 ]
 
 const VIRAL_HOOKS = [
@@ -128,10 +122,10 @@ export default function EditorPage() {
   const [zoomCanvas, setZoomCanvas] = useState(100)
 
   // Subtitle Style Settings
-  const [selectedPresetId, setSelectedPresetId] = useState('viralshort')
+  const [selectedPresetId, setSelectedPresetId] = useState('highlight')
   const [subtitleStyle, setSubtitleStyle] = useState({
-    fontFamily: 'Montserrat',
-    fontSize: 26,
+    fontFamily: 'Arial Black',
+    fontSize: 32,
     fontWeight: '900',
     color: '#ffffff',
     backgroundColor: 'transparent',
@@ -153,7 +147,10 @@ export default function EditorPage() {
     shadowOffsetY: 2,
     karaokeHighlight: true,
     highlightColor: '#ff1f1f',
-    fontStyle: 'normal'
+    fontStyle: 'normal',
+    gradient: false,
+    gradientColors: ['#ff6b6b', '#ffd93d'],
+    animation: 'none',
   })
 
   // Face Tracking
@@ -871,6 +868,9 @@ export default function EditorPage() {
       lineHeight: preset.lineHeight || 1.2,
       letterSpacing: preset.letterSpacing ?? 0,
       textAlign: preset.textAlign || 'center',
+      gradient: preset.gradient || false,
+      gradientColors: preset.gradientColors || ['#ff6b6b', '#ffd93d'],
+      animation: preset.animation || 'none',
     }
     setSubtitleStyle(nextStyle)
     saveToHistory({ subtitleStyle: nextStyle })
