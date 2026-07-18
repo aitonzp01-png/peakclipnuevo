@@ -52,23 +52,6 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   const wordsToDraw = activePhrase.filter(w => !w.deleted && w.startTime <= currentTime + 1.0)
   if (!wordsToDraw.length) return null
 
-  // Merge adjacent sub-word fragments from Whisper BPE tokenization
-  const mergedWords = []
-  for (const w of wordsToDraw) {
-    if (mergedWords.length === 0) {
-      mergedWords.push({ ...w })
-    } else {
-      const last = mergedWords[mergedWords.length - 1]
-      const gap = w.startTime - last.endTime
-      if (gap < 0.03) {
-        last.word = last.word + w.word
-        last.endTime = w.endTime
-      } else {
-        mergedWords.push({ ...w })
-      }
-    }
-  }
-
   const {
     fontFamily = 'Arial Black',
     fontSize = 32,
@@ -124,7 +107,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   const containerMaxWidth = (maxWidth / 100) * 700
   const charWidth = fontSize * 0.6
 
-  const wordEntries = mergedWords.map(w => {
+  const wordEntries = wordsToDraw.map(w => {
     let text = w.word
     if (textTransform === 'uppercase') text = text.toUpperCase()
     if (textTransform === 'lowercase') text = text.toLowerCase()
