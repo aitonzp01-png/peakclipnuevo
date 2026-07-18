@@ -130,30 +130,6 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   }
   if (cur.length > 0) lines.push(cur)
 
-  // Redistribute into max 2 lines
-  if (lines.length > 2) {
-    // Flatten all words, split at midpoint (by pixel width)
-    const all = wordEntries
-    const totalWidth = all.reduce((s, e) => s + e.pixelWidth, 0)
-    let mid = totalWidth / 2
-    let acc = 0
-    let splitIdx = 0
-    for (let i = 0; i < all.length; i++) {
-      acc += all[i].pixelWidth
-      if (acc >= mid) {
-        splitIdx = i
-        break
-      }
-    }
-    splitIdx = Math.max(1, Math.min(splitIdx, all.length - 1))
-    lines = [all.slice(0, splitIdx), all.slice(splitIdx)]
-  } else if (lines.length === 1 && wordEntries.length >= 2) {
-    // Force split into 2 lines when there are enough words
-    const all = wordEntries
-    const half = Math.ceil(all.length / 2)
-    lines = [all.slice(0, half), all.slice(half)]
-  }
-
   const lineHeight = fontSize * 1.35
   const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
 
