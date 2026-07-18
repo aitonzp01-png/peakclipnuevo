@@ -1,5 +1,7 @@
 'use client'
 
+import { motion } from 'framer-motion'
+
 export function groupWordsIntoPhrases(words) {
   const active = words.filter(w => !w.deleted).sort((a, b) => a.startTime - b.startTime)
   const phrases = []
@@ -23,22 +25,6 @@ export function groupWordsIntoPhrases(words) {
   return phrases
 }
 
-function buildStroke(width, color) {
-  if (!width || width === 0 || !color) return 'none'
-  const c = color
-  const w = Math.max(1, Math.round(width))
-  return [
-    `${c} -${w}px -${w}px 0`,
-    `${c} 0 -${w}px 0`,
-    `${c} ${w}px -${w}px 0`,
-    `${c} -${w}px 0 0`,
-    `${c} ${w}px 0 0`,
-    `${c} -${w}px ${w}px 0`,
-    `${c} 0 ${w}px 0`,
-    `${c} ${w}px ${w}px 0`,
-  ].join(', ')
-}
-
 export default function WordByWordOverlay({ words, currentTime, subtitleStyle, presetId }) {
   if (!words || words.length === 0 || presetId === 'none') return null
 
@@ -52,16 +38,16 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
 
   const {
     fontFamily = 'Arial Black',
-    fontSize = 32,
+    fontSize = 34,
     fontWeight = '900',
     color = '#ffffff',
-    highlightColor = '#ff1f1f',
+    highlightColor = '#FF3040',
     stroke = true,
     strokeColor = '#000000',
     strokeWidth = 4,
-    positionY = 85,
+    positionY = 78,
     fontStyle = 'normal',
-    textTransform = 'none',
+    textTransform = 'uppercase',
     maxWidth = 88,
     shadow = false,
     shadowColor = '#000000',
@@ -70,19 +56,19 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     frameBorderColor = '#ffffff',
     frameBorderWidth = 2,
     letterSpacing = 0,
-    karaokeHighlight = false,
-    backgroundOpacity = 0,
-    backgroundColor = 'transparent',
-    backgroundBorderRadius = 6,
+    karaokeHighlight = true,
+    backgroundOpacity = 30,
+    backgroundColor = '#000000',
+    backgroundBorderRadius = 8,
     wordPopEnabled = true,
   } = subtitleStyle || {}
 
   let activeColor = karaokeHighlight ? highlightColor : color
   let pastColor = color
   let futureColor = color
+  let useStroke = stroke !== false
   let useStrokeColor = strokeColor || '#000000'
   let useStrokeWidth = Math.max(1, strokeWidth || 0)
-  let useStroke = stroke !== false
 
   // Background plate
   let bgStyle = {}
@@ -95,13 +81,13 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     if (!isNaN(r)) {
       bgStyle = {
         background: `rgba(${r},${g},${b},${a})`,
-        borderRadius: `${backgroundBorderRadius || 6}px`,
-        padding: '6px 14px',
+        borderRadius: `${backgroundBorderRadius || 8}px`,
+        padding: '8px 16px',
       }
     }
   }
 
-  // Frame border
+  // Frame border around bg plate
   if (frameBorder && backgroundColor && backgroundColor !== 'transparent') {
     bgStyle = {
       ...bgStyle,
@@ -109,7 +95,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Build word entries with text transforms
+  // Build word entries with uppercase transform
   const containerMaxWidth = (maxWidth / 100) * 700
   const charWidth = fontSize * 0.6
 
@@ -138,12 +124,28 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   if (cur.length > 0) lines.push(cur)
 
   const lineHeight = fontSize * 1.35
-  const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
 
-  // Glow
-  let extraGlow = ''
-  if (shadow && shadowBlur > 0 && shadowColor) {
-    extraGlow = `0 0 ${shadowBlur}px ${shadowColor}`
+  // Depth shadow (subtle, behind stroke) + optional glow
+  const depthShadow = useStroke ? `0 2px 4px rgba(0,0,0,0.35)` : ''
+  const glowShadow = (shadow && shadowBlur > 0 && shadowColor)
+    ? `0 0 ${shadowBlur}px ${shadowColor}`
+    : ''
+  const textShadowVal = [glowShadow, depthShadow].filter(Boolean).join(', ') || 'none'
+
+  // Base word styles (shared by all words)
+  const wordBaseStyle = {
+    display: 'inline-block',
+    fontFamily,
+    fontSize: `${fontSize}px`,
+    fontWeight,
+    fontStyle,
+    lineHeight: `${lineHeight}px`,
+    WebkitTextStroke: useStroke ? `${useStrokeWidth}px ${useStrokeColor}` : 'none',
+    textShadow: textShadowVal,
+    whiteSpace: 'pre-wrap',
+    letterSpacing: letterSpacing ? `${letterSpacing}px` : 'normal',
+    wordBreak: 'keep-all',
+    overflowWrap: 'normal',
   }
 
   const containerStyle = {
@@ -166,20 +168,12 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     hyphens: 'none',
   }
 
-  const wordStyle = {
-    display: 'inline-block',
-    fontFamily,
-    fontSize: `${fontSize}px`,
-    fontWeight,
-    fontStyle,
-    lineHeight: `${lineHeight}px`,
-    textShadow: extraGlow ? `${extraGlow}, ${textShadowVal}` : textShadowVal,
-    transition: 'color 0.05s ease, opacity 0.05s ease',
-    whiteSpace: 'pre-wrap',
-    letterSpacing: letterSpacing ? `${letterSpacing}px` : 'normal',
-    wordBreak: 'keep-all',
-    overflowWrap: 'normal',
-    willChange: 'transform',
+  // Spring easing for pop effect
+  const popTransition = {
+    type: 'spring',
+    stiffness: 500,
+    damping: 18,
+    mass: 1,
   }
 
   return (
@@ -197,27 +191,25 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
 
             const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
 
-            const popAnim = wordPopEnabled && isActive
-              ? 'wordPop 0.15s cubic-bezier(0.34, 1.56, 0.64, 1) forwards'
-              : 'none'
-
             return (
-              <span
+              <motion.span
                 key={`${wi}-${isActive ? 'act' : 'pas'}`}
+                initial={isActive && wordPopEnabled ? { scale: 0.9 } : false}
+                animate={isActive && wordPopEnabled ? { scale: 1 } : {}}
+                transition={isActive && wordPopEnabled ? popTransition : {}}
                 style={{
-                  ...wordStyle,
+                  ...wordBaseStyle,
+                  WebkitTextFillColor: wordColor,
                   color: wordColor,
                   opacity,
-                  animation: popAnim,
                 }}
               >
                 {lw.text}{' '}
-              </span>
+              </motion.span>
             )
           })}
         </div>
       ))}
-      <style>{`@keyframes wordPop { 0% { transform: scale(0.9); } 60% { transform: scale(1.05); } 100% { transform: scale(1); } }`}</style>
     </div>
   )
 }

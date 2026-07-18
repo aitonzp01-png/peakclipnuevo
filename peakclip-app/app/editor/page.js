@@ -40,7 +40,7 @@ const SUBTITLE_PRESETS = [
   { id: 'basic', name: 'Basic', color: '#ffffff', fontWeight: '700', stroke: false, backgroundColor: '#000000', backgroundOpacity: 70, backgroundBorderRadius: 4, fontFamily: 'Arial', fontSize: 28 },
   { id: 'monoline', name: 'Monoline', color: '#ffffff', highlightColor: '#ff6b6b', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 5, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 40, backgroundBorderRadius: 10, fontFamily: 'Anton', fontSize: 40, maxWidth: 90 },
   { id: 'multiline', name: 'Multiline', color: '#ffffff', fontWeight: '600', stroke: true, strokeColor: '#000000', strokeWidth: 2, backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 4, fontFamily: 'Inter', fontSize: 20, lineHeight: 1.3 },
-  { id: 'word', name: 'Word by Word', color: '#ffffff', highlightColor: '#ff1f1f', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 6, fontFamily: 'Poppins', fontSize: 28, animation: 'fade' },
+  { id: 'word', name: 'Word by Word', color: '#ffffff', highlightColor: '#FF3040', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 4, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 8, fontFamily: 'Arial Black', fontSize: 34, textTransform: 'uppercase', wordPopEnabled: true },
   { id: 'frame', name: 'Frame', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 35, backgroundBorderRadius: 8, fontFamily: 'Montserrat', fontSize: 28, frameBorder: true, frameBorderColor: '#ffffff', frameBorderWidth: 2 },
 ]
 
@@ -122,31 +122,31 @@ export default function EditorPage() {
   const [zoomCanvas, setZoomCanvas] = useState(100)
 
   // Subtitle Style Settings
-  const [selectedPresetId, setSelectedPresetId] = useState('highlight')
+  const [selectedPresetId, setSelectedPresetId] = useState('word')
   const [subtitleStyle, setSubtitleStyle] = useState({
     fontFamily: 'Arial Black',
-    fontSize: 32,
+    fontSize: 34,
     fontWeight: '900',
     color: '#ffffff',
-    backgroundColor: 'transparent',
-    backgroundOpacity: 0,
-    backgroundBorderRadius: 6,
+    backgroundColor: '#000000',
+    backgroundOpacity: 30,
+    backgroundBorderRadius: 8,
     textAlign: 'center',
-    textTransform: 'none',
+    textTransform: 'uppercase',
     letterSpacing: 0,
-    lineHeight: 1.2,
+    lineHeight: 1.35,
     positionY: 78,
-    maxWidth: 85,
+    maxWidth: 88,
     stroke: true,
     strokeColor: '#000000',
-    strokeWidth: 3,
+    strokeWidth: 4,
     shadow: false,
     shadowColor: '#000000',
     shadowBlur: 4,
     shadowOffsetX: 2,
     shadowOffsetY: 2,
     karaokeHighlight: true,
-    highlightColor: '#ff1f1f',
+    highlightColor: '#FF3040',
     fontStyle: 'normal',
     wordPopEnabled: true,
   })
@@ -671,10 +671,11 @@ export default function EditorPage() {
   }
 
   const lastTimeUpdateRef = useRef(0)
-  // --- RENDER PLAYBACK LOOP ---
+  // --- RENDER PLAYBACK LOOP (rAF para sync preciso de subtítulos) ---
   useEffect(() => {
-    let animId
+    let animId, running = true
     const update = () => {
+      if (!running) return
       try {
         const isMobile = window.innerWidth <= 768
         let time = 0
@@ -683,7 +684,7 @@ export default function EditorPage() {
         } else if (videoRef.current) {
           time = videoRef.current.currentTime
         }
-        if (Math.abs(time - lastTimeUpdateRef.current) > 0.05) {
+        if (Math.abs(time - lastTimeUpdateRef.current) > 0.005) {
           setCurrentTime(time)
           lastTimeUpdateRef.current = time
         }
@@ -696,7 +697,7 @@ export default function EditorPage() {
       animId = requestAnimationFrame(update)
     }
     animId = requestAnimationFrame(update)
-    return () => cancelAnimationFrame(animId)
+    return () => { running = false; cancelAnimationFrame(animId) }
   }, [faceTrackingEnabled, modelsLoaded])
 
   // --- WAVEFORM TIMELINE GENERATOR ---

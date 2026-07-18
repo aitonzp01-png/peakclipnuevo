@@ -264,7 +264,7 @@ const useEditorStore = create((set, get) => ({
     clip: null, clipId: null, isPlaying: false, playheadPos: 0,
     currentTime: 0, duration: 0, videoError: null, videoLoading: true, videoLoaded: false,
     trimStart: 0, trimEnd: 100, aspectRatio: '9:16',
-    transcript: [], subtitleStyle: { ...defaultSubtitleStyle },
+    transcript: [], subtitleStyle: { ...defaultSubtitleStyle, wordPopEnabled: true },
     selectedSubtitlePreset: null, subtitleEnabled: true,
     textOverlays: [], selectedTextId: null,
     audioLayers: [], musicTrack: 'none', musicVolume: 30,
