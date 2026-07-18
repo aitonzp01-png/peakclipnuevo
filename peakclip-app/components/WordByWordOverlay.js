@@ -1,6 +1,11 @@
 'use client'
 
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
+
+function seededRandom(seed) {
+  const x = Math.sin(seed * 9301 + 49297) * 49297
+  return x - Math.floor(x)
+}
 
 export function groupWordsIntoPhrases(words) {
   const active = words.filter(w => !w.deleted).sort((a, b) => a.startTime - b.startTime)
@@ -61,8 +66,13 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     backgroundColor = '#000000',
     backgroundBorderRadius = 8,
     wordPopEnabled = true,
+    wordSizeVariance = 0,
+    wordRotationVariance = 0,
+    linePopEnabled = false,
+    paintOrder = 'normal',
   } = subtitleStyle || {}
 
+  const isImpactVariant = wordSizeVariance > 0 || wordRotationVariance > 0
   let activeColor = karaokeHighlight ? highlightColor : color
   let pastColor = color
   let futureColor = color
@@ -87,7 +97,6 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Frame border around bg plate
   if (frameBorder && backgroundColor && backgroundColor !== 'transparent') {
     bgStyle = {
       ...bgStyle,
@@ -95,7 +104,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Build word entries with uppercase transform
+  // Build word entries
   const containerMaxWidth = (maxWidth / 100) * 700
   const charWidth = fontSize * 0.6
 
@@ -106,7 +115,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     return { word: w, text, pixelWidth: text.length * charWidth + charWidth * 0.5 }
   })
 
-  // Pack into lines: max 3 words per line (CapCut style), fallback to width
+  // Pack into lines: max 3 words per line, fallback to width
   const maxWordsPerLine = 3
   let lines = []
   let cur = []
@@ -125,14 +134,13 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
 
   const lineHeight = fontSize * 1.35
 
-  // Depth shadow (subtle, behind stroke) + optional glow
-  const depthShadow = useStroke ? `0 2px 4px rgba(0,0,0,0.35)` : ''
+  // Text shadow: depth shadow for word mode only, glow for both
+  const depthShadow = !isImpactVariant && useStroke ? `0 2px 4px rgba(0,0,0,0.35)` : ''
   const glowShadow = (shadow && shadowBlur > 0 && shadowColor)
     ? `0 0 ${shadowBlur}px ${shadowColor}`
     : ''
   const textShadowVal = [glowShadow, depthShadow].filter(Boolean).join(', ') || 'none'
 
-  // Base word styles (shared by all words)
   const wordBaseStyle = {
     display: 'inline-block',
     fontFamily,
@@ -141,6 +149,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     fontStyle,
     lineHeight: `${lineHeight}px`,
     WebkitTextStroke: useStroke ? `${useStrokeWidth}px ${useStrokeColor}` : 'none',
+    paintOrder: paintOrder === 'stroke-fill' ? 'stroke fill' : 'normal',
     textShadow: textShadowVal,
     whiteSpace: 'pre-wrap',
     letterSpacing: letterSpacing ? `${letterSpacing}px` : 'normal',
@@ -168,7 +177,6 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     hyphens: 'none',
   }
 
-  // Spring easing for pop effect
   const popTransition = {
     type: 'spring',
     stiffness: 500,
@@ -176,40 +184,85 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     mass: 1,
   }
 
-  return (
-    <div style={containerStyle}>
-      {lines.map((lineWords, li) => (
-        <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
-          {lineWords.map((lw, wi) => {
-            const isPast = currentTime > lw.word.endTime
-            const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
-            const isFuture = currentTime < lw.word.startTime
-            let opacity = 0.25
-            if (isPast) opacity = 0.7
-            if (isActive) opacity = 1
-            if (isFuture) opacity = 0.25
+  // Build subtitle lines content (shared between modes)
+  const lineContent = lines.map((lineWords, li) => (
+    <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
+      {lineWords.map((lw, wi) => {
+        // Seeded deterministic variation for impact mode
+        const wordSeed = activePhraseIdx * 1000 + li * 100 + wi * 7
+        const sizeScale = 1 + (seededRandom(wordSeed) - 0.5) * wordSizeVariance * 2
+        const rotation = (seededRandom(wordSeed + 1) - 0.5) * wordRotationVariance * 2
+        const wordTransform = isImpactVariant ? `scale(${sizeScale}) rotate(${rotation}deg)` : undefined
 
-            const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
+        const isPast = currentTime > lw.word.endTime
+        const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
 
-            return (
-              <motion.span
-                key={`${wi}-${isActive ? 'act' : 'pas'}`}
-                initial={isActive && wordPopEnabled ? { scale: 0.9 } : false}
-                animate={isActive && wordPopEnabled ? { scale: 1 } : {}}
-                transition={isActive && wordPopEnabled ? popTransition : {}}
-                style={{
-                  ...wordBaseStyle,
-                  WebkitTextFillColor: wordColor,
-                  color: wordColor,
-                  opacity,
-                }}
-              >
-                {lw.text}{' '}
-              </motion.span>
-            )
-          })}
-        </div>
-      ))}
+        let opacity
+        if (isImpactVariant) {
+          opacity = 1
+        } else {
+          const isFuture = currentTime < lw.word.startTime
+          opacity = isPast ? 0.7 : isActive ? 1 : 0.25
+        }
+
+        const wordColor = isImpactVariant
+          ? color
+          : isActive ? activeColor : (isPast ? pastColor : color)
+
+        if (isImpactVariant) {
+          return (
+            <span
+              key={wi}
+              style={{
+                ...wordBaseStyle,
+                WebkitTextFillColor: wordColor,
+                color: wordColor,
+                opacity,
+                transform: wordTransform,
+              }}
+            >
+              {lw.text}{' '}
+            </span>
+          )
+        }
+
+        return (
+          <motion.span
+            key={`${wi}-${isActive ? 'act' : 'pas'}`}
+            initial={isActive && wordPopEnabled ? { scale: 0.9 } : false}
+            animate={isActive && wordPopEnabled ? { scale: 1 } : {}}
+            transition={isActive && wordPopEnabled ? popTransition : {}}
+            style={{
+              ...wordBaseStyle,
+              WebkitTextFillColor: wordColor,
+              color: wordColor,
+              opacity,
+            }}
+          >
+            {lw.text}{' '}
+          </motion.span>
+        )
+      })}
     </div>
-  )
+  ))
+
+  // Impact variant with line-level entry animation
+  if (isImpactVariant && linePopEnabled) {
+    return (
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activePhraseIdx}
+          style={containerStyle}
+          initial={{ scale: 0.7, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ opacity: 0, transition: { duration: 0.08 } }}
+          transition={{ type: 'spring', stiffness: 400, damping: 14 }}
+        >
+          {lineContent}
+        </motion.div>
+      </AnimatePresence>
+    )
+  }
+
+  return <div style={containerStyle}>{lineContent}</div>
 }

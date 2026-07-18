@@ -60,6 +60,7 @@ export const subtitlePresets = [
   { id: 'pod-p', label: 'Pod P', fontFamily: 'Inter', fontSize: 28, fontWeight: '600', color: '#f5f5f0', textAlign: 'center', lineHeight: 1.5 },
   { id: 'mozi', label: 'Mozi', fontFamily: 'Inter', fontSize: 34, fontWeight: '900', color: '#c4ff3d', stroke: true, strokeColor: '#000000', strokeWidth: 3, textAlign: 'center' },
   { id: 'popline', label: 'Popline', fontFamily: 'Inter', fontSize: 30, fontWeight: '800', color: '#0f0f0f', backgroundColor: '#c4ff3d', backgroundOpacity: 100, textAlign: 'center' },
+  { id: 'impact', label: 'Impact / Meme', fontFamily: 'Impact', fontSize: 36, fontWeight: '900', color: '#ffffff', stroke: true, strokeColor: '#000000', strokeWidth: 5, karaokeHighlight: false, backgroundColor: '#000000', backgroundOpacity: 25, backgroundBorderRadius: 8, textAlign: 'center', textTransform: 'uppercase', wordPopEnabled: false, wordSizeVariance: 0.15, wordRotationVariance: 5, paintOrder: 'stroke-fill' },
 ]
 
 export const defaultSubtitleStyle = {

@@ -42,6 +42,7 @@ const SUBTITLE_PRESETS = [
   { id: 'multiline', name: 'Multiline', color: '#ffffff', fontWeight: '600', stroke: true, strokeColor: '#000000', strokeWidth: 2, backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 4, fontFamily: 'Inter', fontSize: 20, lineHeight: 1.3 },
   { id: 'word', name: 'Word by Word', color: '#ffffff', highlightColor: '#FF3040', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 4, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 8, fontFamily: 'Arial Black', fontSize: 34, textTransform: 'uppercase', wordPopEnabled: true },
   { id: 'frame', name: 'Frame', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 35, backgroundBorderRadius: 8, fontFamily: 'Montserrat', fontSize: 28, frameBorder: true, frameBorderColor: '#ffffff', frameBorderWidth: 2 },
+  { id: 'impact', name: 'Impact / Meme', color: '#ffffff', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 5, karaokeHighlight: false, backgroundColor: '#000000', backgroundOpacity: 25, backgroundBorderRadius: 8, fontFamily: 'Impact', fontSize: 36, textTransform: 'uppercase', wordPopEnabled: false, wordSizeVariance: 0.15, wordRotationVariance: 5, paintOrder: 'stroke-fill' },
 ]
 
 const VIRAL_HOOKS = [
