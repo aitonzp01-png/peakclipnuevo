@@ -38,7 +38,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   if (activePhraseIdx === -1) return null
 
   const activePhrase = phrases[activePhraseIdx]
-  const wordsToDraw = activePhrase.filter(w => !w.deleted && w.startTime <= currentTime + 1.0)
+  const wordsToDraw = activePhrase.filter(w => !w.deleted)
   if (!wordsToDraw.length) return null
 
   const {
@@ -132,6 +132,13 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   }
   if (cur.length > 0) lines.push(cur)
 
+  // Find the ONE active line whose time range overlaps currentTime
+  const activeLineIdx = lines.findIndex(lineWords =>
+    lineWords.some(lw => currentTime >= lw.word.startTime && currentTime <= lw.word.endTime)
+  )
+  if (activeLineIdx === -1) return null
+  const activeLineWords = lines[activeLineIdx]
+
   const lineHeight = fontSize * 1.35
 
   // Text shadow: depth shadow for word mode only, glow for both
@@ -184,12 +191,18 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     mass: 1,
   }
 
-  // Build subtitle lines content (shared between modes)
-  const lineContent = lines.map((lineWords, li) => (
-    <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
-      {lineWords.map((lw, wi) => {
-        // Seeded deterministic variation for impact mode
-        const wordSeed = activePhraseIdx * 1000 + li * 100 + wi * 7
+  // Render only the active line with AnimatePresence crossfade between lines
+  const lineEntry = (
+    <motion.div
+      key={activePhraseIdx + '-' + activeLineIdx}
+      style={{ textAlign: 'center', ...bgStyle }}
+      initial={isImpactVariant && linePopEnabled ? { scale: 0.7, opacity: 0 } : { opacity: 0 }}
+      animate={isImpactVariant && linePopEnabled ? { scale: 1, opacity: 1 } : { opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: 0.08 } }}
+      transition={isImpactVariant && linePopEnabled ? { type: 'spring', stiffness: 400, damping: 14 } : { duration: 0.1 }}
+    >
+      {activeLineWords.map((lw, wi) => {
+        const wordSeed = activePhraseIdx * 1000 + activeLineIdx * 100 + wi * 7
         const sizeScale = 1 + (seededRandom(wordSeed) - 0.5) * wordSizeVariance * 2
         const rotation = (seededRandom(wordSeed + 1) - 0.5) * wordRotationVariance * 2
         const wordTransform = isImpactVariant ? `scale(${sizeScale}) rotate(${rotation}deg)` : undefined
@@ -205,22 +218,11 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
           opacity = isPast ? 0.7 : isActive ? 1 : 0.25
         }
 
-        const wordColor = isImpactVariant
-          ? color
-          : isActive ? activeColor : (isPast ? pastColor : color)
+        const wordColor = isImpactVariant ? color : isActive ? activeColor : (isPast ? pastColor : color)
 
         if (isImpactVariant) {
           return (
-            <span
-              key={wi}
-              style={{
-                ...wordBaseStyle,
-                WebkitTextFillColor: wordColor,
-                color: wordColor,
-                opacity,
-                transform: wordTransform,
-              }}
-            >
+            <span key={wi} style={{ ...wordBaseStyle, WebkitTextFillColor: wordColor, color: wordColor, opacity, transform: wordTransform }}>
               {lw.text}{' '}
             </span>
           )
@@ -232,37 +234,20 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
             initial={isActive && wordPopEnabled ? { scale: 0.9 } : false}
             animate={isActive && wordPopEnabled ? { scale: 1 } : {}}
             transition={isActive && wordPopEnabled ? popTransition : {}}
-            style={{
-              ...wordBaseStyle,
-              WebkitTextFillColor: wordColor,
-              color: wordColor,
-              opacity,
-            }}
+            style={{ ...wordBaseStyle, WebkitTextFillColor: wordColor, color: wordColor, opacity }}
           >
             {lw.text}{' '}
           </motion.span>
         )
       })}
-    </div>
-  ))
+    </motion.div>
+  )
 
-  // Impact variant with line-level entry animation
-  if (isImpactVariant && linePopEnabled) {
-    return (
+  return (
+    <div style={containerStyle}>
       <AnimatePresence mode="wait">
-        <motion.div
-          key={activePhraseIdx}
-          style={containerStyle}
-          initial={{ scale: 0.7, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          exit={{ opacity: 0, transition: { duration: 0.08 } }}
-          transition={{ type: 'spring', stiffness: 400, damping: 14 }}
-        >
-          {lineContent}
-        </motion.div>
+        {lineEntry}
       </AnimatePresence>
-    )
-  }
-
-  return <div style={containerStyle}>{lineContent}</div>
+    </div>
+  )
 }
