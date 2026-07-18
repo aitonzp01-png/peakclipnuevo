@@ -41,7 +41,7 @@ const SUBTITLE_PRESETS = [
   { id: 'monoline', name: 'Monoline', color: '#ffffff', highlightColor: '#ff6b6b', fontWeight: '900', stroke: true, strokeColor: '#000000', strokeWidth: 5, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 40, backgroundBorderRadius: 10, fontFamily: 'Anton', fontSize: 40, maxWidth: 90 },
   { id: 'multiline', name: 'Multiline', color: '#ffffff', fontWeight: '600', stroke: true, strokeColor: '#000000', strokeWidth: 2, backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 4, fontFamily: 'Inter', fontSize: 20, lineHeight: 1.3 },
   { id: 'word', name: 'Word by Word', color: '#ffffff', highlightColor: '#ff1f1f', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 30, backgroundBorderRadius: 6, fontFamily: 'Poppins', fontSize: 28, animation: 'fade' },
-  { id: 'gradient', name: 'Gradient', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, gradient: true, gradientColors: ['#ff6b6b', '#ffd93d'], backgroundColor: '#000000', backgroundOpacity: 20, backgroundBorderRadius: 6, fontFamily: 'Montserrat', fontSize: 28 },
+  { id: 'frame', name: 'Frame', color: '#ffffff', highlightColor: '#ffd93d', fontWeight: '800', stroke: true, strokeColor: '#000000', strokeWidth: 3, karaokeHighlight: true, backgroundColor: '#000000', backgroundOpacity: 35, backgroundBorderRadius: 8, fontFamily: 'Montserrat', fontSize: 28, frameBorder: true, frameBorderColor: '#ffffff', frameBorderWidth: 2 },
 ]
 
 const VIRAL_HOOKS = [
@@ -868,8 +868,9 @@ export default function EditorPage() {
       lineHeight: preset.lineHeight || 1.2,
       letterSpacing: preset.letterSpacing ?? 0,
       textAlign: preset.textAlign || 'center',
-      gradient: preset.gradient || false,
-      gradientColors: preset.gradientColors || ['#ff6b6b', '#ffd93d'],
+      frameBorder: preset.frameBorder || false,
+      frameBorderColor: preset.frameBorderColor || '#ffffff',
+      frameBorderWidth: preset.frameBorderWidth || 2,
       animation: preset.animation || 'none',
     }
     setSubtitleStyle(nextStyle)

@@ -68,8 +68,9 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     shadow = false,
     shadowColor = '#000000',
     shadowBlur = 0,
-    gradient: useGradient = false,
-    gradientColors = ['#ff6b6b', '#ffd93d'],
+    frameBorder = false,
+    frameBorderColor = '#ffffff',
+    frameBorderWidth = 2,
     animation: textAnimation = 'none',
     letterSpacing = 0,
     karaokeHighlight = false,
@@ -100,6 +101,14 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
         borderRadius: `${backgroundBorderRadius || 6}px`,
         padding: '6px 14px',
       }
+    }
+  }
+
+  // Frame border: add border to bg plate
+  if (frameBorder && backgroundColor && backgroundColor !== 'transparent') {
+    bgStyle = {
+      ...bgStyle,
+      border: `${frameBorderWidth}px solid ${frameBorderColor}`,
     }
   }
 
@@ -189,15 +198,8 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
           animation: 'wordFadeIn 0.25s ease-out',
         } : {}
 
-        const gradientLineStyle = useGradient ? {
-          background: `linear-gradient(135deg, ${gradientColors[0]}, ${gradientColors[1]})`,
-          WebkitBackgroundClip: 'text',
-          WebkitTextFillColor: 'transparent',
-          backgroundClip: 'text',
-        } : {}
-
         return (
-          <div key={li} style={{ textAlign: 'center', ...bgStyle, ...gradientLineStyle, ...lineAnimStyle }}>
+          <div key={li} style={{ textAlign: 'center', ...bgStyle, ...lineAnimStyle }}>
             {lineWords.map((lw, wi) => {
               const isPast = currentTime > lw.word.endTime
               const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
@@ -209,17 +211,12 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
 
               const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
 
-              const wordGradientStyle = useGradient ? {
-                WebkitTextFillColor: isActive ? activeColor : 'transparent',
-                color: 'transparent',
-              } : { color: wordColor }
-
               return (
                 <span
                   key={wi}
                   style={{
                     ...wordStyle,
-                    ...wordGradientStyle,
+                    color: wordColor,
                     opacity,
                   }}
                 >
