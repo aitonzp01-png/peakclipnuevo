@@ -60,7 +60,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     } else {
       const last = mergedWords[mergedWords.length - 1]
       const gap = w.startTime - last.endTime
-      if (gap < 0.1) {
+      if (gap < 0.03) {
         last.word = last.word + w.word
         last.endTime = w.endTime
       } else {
@@ -120,32 +120,56 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Build display lines using canvas measurement for accuracy
-  let lines = []
-  let currentLine = []
-  let currentLineWidth = 0
-
-  // Use a pixel-based max width (approximate)
+  // Build display lines — max 2 lines, words adapt to video width
   const containerMaxWidth = (maxWidth / 100) * 700
+  const charWidth = fontSize * 0.6
 
-  for (const w of mergedWords) {
-    let wordText = w.word
-    if (textTransform === 'uppercase') wordText = wordText.toUpperCase()
-    if (textTransform === 'lowercase') wordText = wordText.toLowerCase()
-    // Rough char-width based on fontSize (for Arial Black, ~0.65 * fontSize per char)
-    const charWidth = fontSize * 0.6
-    const wordPixelWidth = wordText.length * charWidth + charWidth * 0.5
+  const wordEntries = mergedWords.map(w => {
+    let text = w.word
+    if (textTransform === 'uppercase') text = text.toUpperCase()
+    if (textTransform === 'lowercase') text = text.toLowerCase()
+    return { word: w, text, pixelWidth: text.length * charWidth + charWidth * 0.5 }
+  })
 
-    if (currentLineWidth + wordPixelWidth > containerMaxWidth && currentLine.length > 0) {
-      lines.push(currentLine)
-      currentLine = [{ word: w, text: wordText, pixelWidth: wordPixelWidth }]
-      currentLineWidth = wordPixelWidth
+  // First pass: pack into lines respecting container width
+  let lines = []
+  let cur = []
+  let curW = 0
+  for (const e of wordEntries) {
+    if (curW + e.pixelWidth > containerMaxWidth && cur.length > 0) {
+      lines.push(cur)
+      cur = [e]
+      curW = e.pixelWidth
     } else {
-      currentLine.push({ word: w, text: wordText, pixelWidth: wordPixelWidth })
-      currentLineWidth += wordPixelWidth
+      cur.push(e)
+      curW += e.pixelWidth
     }
   }
-  if (currentLine.length > 0) lines.push(currentLine)
+  if (cur.length > 0) lines.push(cur)
+
+  // Redistribute into max 2 lines
+  if (lines.length > 2) {
+    // Flatten all words, split at midpoint (by pixel width)
+    const all = wordEntries
+    const totalWidth = all.reduce((s, e) => s + e.pixelWidth, 0)
+    let mid = totalWidth / 2
+    let acc = 0
+    let splitIdx = 0
+    for (let i = 0; i < all.length; i++) {
+      acc += all[i].pixelWidth
+      if (acc >= mid) {
+        splitIdx = i
+        break
+      }
+    }
+    splitIdx = Math.max(1, Math.min(splitIdx, all.length - 1))
+    lines = [all.slice(0, splitIdx), all.slice(splitIdx)]
+  } else if (lines.length === 1 && wordEntries.length >= 2) {
+    // Force split into 2 lines when there are enough words
+    const all = wordEntries
+    const half = Math.ceil(all.length / 2)
+    lines = [all.slice(0, half), all.slice(half)]
+  }
 
   const lineHeight = fontSize * 1.35
   const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
