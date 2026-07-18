@@ -148,9 +148,7 @@ export default function EditorPage() {
     karaokeHighlight: true,
     highlightColor: '#ff1f1f',
     fontStyle: 'normal',
-    gradient: false,
-    gradientColors: ['#ff6b6b', '#ffd93d'],
-    animation: 'none',
+    wordPopEnabled: true,
   })
 
   // Face Tracking
@@ -1864,6 +1862,12 @@ export default function EditorPage() {
                         )}
                       </div>
                       <div style={{ borderTop: '1px solid var(--cream-panel-border)', paddingTop: '8px' }}>
+                        <label style={{ fontSize: '10px', color: 'var(--cream-text-secondary)' }}>
+                          <input type="checkbox" checked={subtitleStyle.wordPopEnabled !== false} onChange={(e) => setSubtitleStyle({ ...subtitleStyle, wordPopEnabled: e.target.checked })} style={{ marginRight: '6px' }} />
+                          Word Pop (scale bounce)
+                        </label>
+                      </div>
+                      <div style={{ borderTop: '1px solid var(--cream-panel-border)', paddingTop: '8px' }}>
                         <label style={{ fontSize: '10px', color: 'var(--cream-text-secondary)' }}>Highlight color (karaoke)</label>
                         <input type="color" value={subtitleStyle.highlightColor || '#ff1f1f'} onChange={(e) => setSubtitleStyle({ ...subtitleStyle, highlightColor: e.target.value, karaokeHighlight: true })} style={{ width: '100%', height: '30px', border: 'none', cursor: 'pointer' }} />
                       </div>
@@ -2523,6 +2527,16 @@ export default function EditorPage() {
                     onChange={(e) => setSubtitleStyle({ ...subtitleStyle, strokeColor: e.target.value })}
                     className='editor-mobile-color'
                   />
+                  <div className='editor-mobile-label' style={{ marginTop: '12px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      <input
+                        type='checkbox'
+                        checked={subtitleStyle.wordPopEnabled !== false}
+                        onChange={(e) => setSubtitleStyle({ ...subtitleStyle, wordPopEnabled: e.target.checked })}
+                      />
+                      Word Pop (scale bounce)
+                    </label>
+                  </div>
                 </div>
               )}
 

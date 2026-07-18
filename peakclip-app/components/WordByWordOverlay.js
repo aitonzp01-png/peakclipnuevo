@@ -1,7 +1,5 @@
 'use client'
 
-import { useRef } from 'react'
-
 export function groupWordsIntoPhrases(words) {
   const active = words.filter(w => !w.deleted).sort((a, b) => a.startTime - b.startTime)
   const phrases = []
@@ -71,23 +69,22 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     frameBorder = false,
     frameBorderColor = '#ffffff',
     frameBorderWidth = 2,
-    animation: textAnimation = 'none',
     letterSpacing = 0,
     karaokeHighlight = false,
     backgroundOpacity = 0,
     backgroundColor = 'transparent',
     backgroundBorderRadius = 6,
+    wordPopEnabled = true,
   } = subtitleStyle || {}
 
-  // Colors: karaoke mode uses highlightColor for active word
   let activeColor = karaokeHighlight ? highlightColor : color
   let pastColor = color
   let futureColor = color
-  let useStroke = stroke !== false
   let useStrokeColor = strokeColor || '#000000'
   let useStrokeWidth = Math.max(1, strokeWidth || 0)
+  let useStroke = stroke !== false
 
-  // Build background plate from subtitleStyle props
+  // Background plate
   let bgStyle = {}
   if (backgroundColor && backgroundColor !== 'transparent' && backgroundOpacity > 0) {
     const a = Math.min(1, Math.max(0, backgroundOpacity / 100))
@@ -104,7 +101,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Frame border: add border to bg plate
+  // Frame border
   if (frameBorder && backgroundColor && backgroundColor !== 'transparent') {
     bgStyle = {
       ...bgStyle,
@@ -112,7 +109,7 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     }
   }
 
-  // Build display lines — max 2 lines, words adapt to video width
+  // Build word entries with text transforms
   const containerMaxWidth = (maxWidth / 100) * 700
   const charWidth = fontSize * 0.6
 
@@ -123,12 +120,13 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
     return { word: w, text, pixelWidth: text.length * charWidth + charWidth * 0.5 }
   })
 
-  // First pass: pack into lines respecting container width
+  // Pack into lines: max 3 words per line (CapCut style), fallback to width
+  const maxWordsPerLine = 3
   let lines = []
   let cur = []
   let curW = 0
   for (const e of wordEntries) {
-    if (curW + e.pixelWidth > containerMaxWidth && cur.length > 0) {
+    if ((cur.length >= maxWordsPerLine || curW + e.pixelWidth > containerMaxWidth) && cur.length > 0) {
       lines.push(cur)
       cur = [e]
       curW = e.pixelWidth
@@ -142,17 +140,10 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   const lineHeight = fontSize * 1.35
   const textShadowVal = buildStroke(useStrokeWidth, useStrokeColor)
 
-  // Glow: extra blurred text-shadow when enabled
+  // Glow
   let extraGlow = ''
   if (shadow && shadowBlur > 0 && shadowColor) {
     extraGlow = `0 0 ${shadowBlur}px ${shadowColor}`
-  }
-
-  // Animation: track phrase changes to trigger fade-in
-  const prevPhraseRef = useRef(-1)
-  const phraseChanged = activePhraseIdx !== prevPhraseRef.current
-  if (phraseChanged) {
-    prevPhraseRef.current = activePhraseIdx
   }
 
   const containerStyle = {
@@ -176,60 +167,57 @@ export default function WordByWordOverlay({ words, currentTime, subtitleStyle, p
   }
 
   const wordStyle = {
-    display: 'inline',
+    display: 'inline-block',
     fontFamily,
     fontSize: `${fontSize}px`,
     fontWeight,
     fontStyle,
     lineHeight: `${lineHeight}px`,
     textShadow: extraGlow ? `${extraGlow}, ${textShadowVal}` : textShadowVal,
-    transition: 'color 0.1s ease, opacity 0.1s ease',
+    transition: 'color 0.05s ease, opacity 0.05s ease',
     whiteSpace: 'pre-wrap',
     letterSpacing: letterSpacing ? `${letterSpacing}px` : 'normal',
     wordBreak: 'keep-all',
     overflowWrap: 'normal',
+    willChange: 'transform',
   }
 
   return (
     <div style={containerStyle}>
-      {lines.map((lineWords, li) => {
-        const isCurrentLine = lines[activePhraseIdx] === lineWords
-        const lineAnimStyle = textAnimation === 'fade' && isCurrentLine && phraseChanged ? {
-          animation: 'wordFadeIn 0.25s ease-out',
-        } : {}
+      {lines.map((lineWords, li) => (
+        <div key={li} style={{ textAlign: 'center', ...bgStyle }}>
+          {lineWords.map((lw, wi) => {
+            const isPast = currentTime > lw.word.endTime
+            const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
+            const isFuture = currentTime < lw.word.startTime
+            let opacity = 0.25
+            if (isPast) opacity = 0.7
+            if (isActive) opacity = 1
+            if (isFuture) opacity = 0.25
 
-        return (
-          <div key={li} style={{ textAlign: 'center', ...bgStyle, ...lineAnimStyle }}>
-            {lineWords.map((lw, wi) => {
-              const isPast = currentTime > lw.word.endTime
-              const isActive = currentTime >= lw.word.startTime && currentTime <= lw.word.endTime
-              const isFuture = currentTime < lw.word.startTime
-              let opacity = 0.25
-              if (isPast) opacity = 0.7
-              if (isActive) opacity = 1
-              if (isFuture) opacity = 0.25
+            const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
 
-              const wordColor = isActive ? activeColor : (isPast ? pastColor : futureColor)
+            const popAnim = wordPopEnabled && isActive
+              ? 'wordPop 0.15s cubic-bezier(0.34, 1.56, 0.64, 1) forwards'
+              : 'none'
 
-              return (
-                <span
-                  key={wi}
-                  style={{
-                    ...wordStyle,
-                    color: wordColor,
-                    opacity,
-                  }}
-                >
-                  {lw.text}{' '}
-                </span>
-              )
-            })}
-          </div>
-        )
-      })}
-      {textAnimation === 'fade' && (
-        <style>{`@keyframes wordFadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }`}</style>
-      )}
+            return (
+              <span
+                key={`${wi}-${isActive ? 'act' : 'pas'}`}
+                style={{
+                  ...wordStyle,
+                  color: wordColor,
+                  opacity,
+                  animation: popAnim,
+                }}
+              >
+                {lw.text}{' '}
+              </span>
+            )
+          })}
+        </div>
+      ))}
+      <style>{`@keyframes wordPop { 0% { transform: scale(0.9); } 60% { transform: scale(1.05); } 100% { transform: scale(1); } }`}</style>
     </div>
   )
 }
