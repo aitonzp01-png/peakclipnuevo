@@ -225,8 +225,17 @@ def smart_reframe(input_path, output_path, target_w=1080, target_h=1920,
                       f"det={det_type}")
 
         cap.release()
-        proc.stdin.close()
-        proc.wait()
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+
+        try:
+            proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            print(f"[smart_reframe] ffmpeg encode timed out after 120s, killing")
+            proc.kill()
+            proc.wait(timeout=10)
 
         if proc.returncode != 0:
             stderr = proc.stderr.read().decode(errors="replace")[-1000:]
@@ -255,8 +264,13 @@ def smart_reframe(input_path, output_path, target_w=1080, target_h=1920,
 
         mux_cmd += ["-movflags", "+faststart", output_path]
 
-        print(f"[smart_reframe] muxing audio: {' '.join(mux_cmd[:8])}...")
-        mux_result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=120)
+        print(f"[smart_reframe] muxing audio: {len(mux_cmd)} args")
+        try:
+            mux_result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            print(f"[smart_reframe] mux timed out after 120s, using video-only")
+            os.replace(raw_video, output_path)
+            return
 
         if mux_result.returncode != 0:
             print(f"[smart_reframe] mux failed, using video-only: {mux_result.stderr[-500:]}")
