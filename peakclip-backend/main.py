@@ -1440,14 +1440,17 @@ def download_with_alldebrid(url: str, output_path: str) -> bool:
 
 
 def download_with_cobalt(url: str, output_path: str) -> bool:
-    """Fallback downloader using a self-hosted or public cobalt API instance.
+    """Download YouTube video via cobalt.tools API v10.
 
-    For the public api.cobalt.tools you usually need an API key. Set it via
-    COBALT_API_KEY env var. Otherwise only unauthenticated instances work.
+    Cobalt has its own servers that are NOT blocked by YouTube.
+    This is the primary download method when yt-dlp fails.
     """
+    cobalt_url = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools/")
     api_key = os.environ.get("COBALT_API_KEY")
-    cobalt_url = os.environ.get("COBALT_API_URL", "https://api.cobalt.tools/api/json")
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
     if api_key:
         headers["Authorization"] = f"Api-Key {api_key}"
     try:
@@ -1457,34 +1460,38 @@ def download_with_cobalt(url: str, output_path: str) -> bool:
                 headers=headers,
                 json={
                     "url": url,
-                    "downloadMode": "auto",
-                    "videoQuality": "720",
+                    "videoQuality": "1080",
                     "filenameStyle": "basic",
                     "youtubeVideoCodec": "h264",
                 },
                 timeout=30,
             )
             if r.status_code != 200:
-                print(f"cobalt API status {r.status_code}: {r.text[:200]}")
+                print(f"cobalt v10 API status {r.status_code}: {r.text[:300]}")
                 return False
             data = r.json()
+            print(f"cobalt v10 response: status={data.get('status')}")
             if data.get("status") == "error":
-                print(f"cobalt API error: {data.get('error', {})}")
+                err = data.get("error", {})
+                print(f"cobalt v10 error: {err}")
                 return False
             status = data.get("status")
             urls = []
-            if status in ("tunnel", "redirect"):
+            if status == "tunnel":
+                urls = [data.get("url")]
+            elif status == "redirect":
                 urls = [data.get("url")]
             elif status == "local-processing":
                 urls = data.get("tunnel", [])
-            if not urls:
+            if not urls or not urls[0]:
+                print(f"cobalt v10: no download URL in response: {data}")
                 return False
             for u in urls:
-                if _stream_download(client, u, output_path, timeout=300):
-                    print("cobalt download success")
+                if u and _stream_download(client, u, output_path, timeout=300):
+                    print(f"cobalt v10 download success: {output_path}")
                     return True
     except Exception as e:
-        print(f"cobalt fallback failed: {e}")
+        print(f"cobalt v10 fallback failed: {e}")
     return False
 
 
@@ -1609,6 +1616,16 @@ def process_video_background(job_id: str, user_id: str, url: str):
                 raise TimeoutError(f"Processing deadline exceeded ({label})")
 
         # Retry download with different strategies
+        # ── PHASE 0: Try cobalt.tools first (fastest, uses their servers) ──
+        jobs_store[job_id] = {"status": "processing", "message": "Downloading video..."}
+        print(f"Job {job_id}: trying cobalt.tools first")
+        try:
+            if download_with_cobalt(url, video_path):
+                last_err = None
+                print(f"Job {job_id}: cobalt download succeeded")
+        except Exception as e:
+            print(f"Job {job_id}: cobalt attempt failed: {e}")
+
         strategies = [
             {},
             {'player_client': ['web']},
@@ -1665,7 +1682,11 @@ def process_video_background(job_id: str, user_id: str, url: str):
         max_attempts = 16
         proxy_disabled = False
         bot_detection_count = 0
-        for attempt in range(max_attempts):
+        # Skip yt-dlp loop if cobalt already downloaded successfully
+        cobalt_ok = os.path.exists(video_path) and os.path.getsize(video_path) > 1024
+        if cobalt_ok:
+            print(f"Job {job_id}: video already downloaded by cobalt, skipping yt-dlp")
+        for attempt in range(max_attempts if not cobalt_ok else 0):
             check_deadline("download")
             cfg = strategies[attempt % len(strategies)]
             jobs_store[job_id] = {"status": "processing", "message": f"Downloading video (attempt {attempt+1}/{max_attempts})..."}
