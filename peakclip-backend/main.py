@@ -1744,14 +1744,20 @@ def process_video_background(job_id: str, user_id: str, url: str):
                 if add_cookies:
                     ydl_opts['cookiefile'] = COOKIES_PATH
                 extractor_args = {'youtube': cfg} if cfg else {'youtube': {}}
-                # PO token and visitor_data only on later attempts (after proxy-only phase)
                 if attempt >= 4:
+                    # Phase 2: add PO token and cookies as fallback
                     if po_token:
                         extractor_args['youtube']['po_token'] = po_token
                     if visitor_data:
                         extractor_args['youtube']['visitor_data'] = visitor_data
                     if BGUTIL_POT_AVAILABLE:
                         extractor_args['youtubepot-bgutilhttp'] = {}
+                else:
+                    # Phase 1: proxy-only — disable bgutil PO token plugin entirely.
+                    # The bgutil headless Chrome connects to YouTube from Railway's IP
+                    # (NOT through the proxy), which causes YouTube to flag the session.
+                    # Point it at an invalid port so it fails silently.
+                    extractor_args['youtubepot-bgutilhttp'] = {'server_url': 'http://127.0.0.1:0'}
                 if extractor_args['youtube'] or 'youtubepot-bgutilhttp' in extractor_args:
                     ydl_opts['extractor_args'] = extractor_args
                 phase = "proxy-only" if not add_cookies else "proxy+cookies"
