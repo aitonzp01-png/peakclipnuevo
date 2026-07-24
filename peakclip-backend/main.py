@@ -232,7 +232,7 @@ async def oauth_token_monitor():
 # ────────────────────────────────────────────────────────────────
 
 # ── Cookie support ────────────────────────────────────────────
-COOKIES_PATH = os.path.join(OAUTH_TOKEN_CACHE_DIR, 'cookies.txt')
+COOKIES_PATH = '/tmp/yt-cookies.txt'
 
 def setup_cookies() -> str | None:
     """Load cookies from YOUTUBE_COOKIES_B64 env var (Netscape format) and write to disk.
@@ -357,9 +357,10 @@ async def lifespan(app: FastAPI):
     # Startup
     ensure_fonts()
     print(f"yt-dlp version: {yt_dlp.version.__version__}")
-    # Remove stale cookies — they may cause IP mismatch when using proxy.
-    # Cookies are only used as fallback after proxy-only phase.
-    for _cf in ('cookies.txt',):
+    # Remove stale cookies that yt-dlp auto-discovers from its cache dir.
+    # We write cookies to /tmp/yt-cookies.txt instead (COOKIES_PATH),
+    # and only pass them explicitly via cookiefile when needed.
+    for _cf in ('cookies.txt', os.path.expanduser('~/.cache/yt-dlp/cookies.txt')):
         try:
             if os.path.exists(_cf):
                 os.remove(_cf)
@@ -2146,8 +2147,7 @@ Return JSON with this exact format:
                 music_path = resolve_music_path(clip_mood)
 
                 # -ss before -i seeks to keyframe, then decodes to exact clip_start (frame-accurate)
-                no_subs = f"outputs/{job_id}_clip{i+1}_nosubs.mp4"
-                local_files.append(no_subs)
+                local_files.append(output_path)
 
                 # ── Step 1: Extract raw clip segment (video + audio) ──
                 raw_clip = os.path.join(tempfile.gettempdir(), f"{job_id}_clip{i+1}_raw.mp4")
@@ -2165,14 +2165,15 @@ Return JSON with this exact format:
                 reframed = os.path.join(tempfile.gettempdir(), f"{job_id}_clip{i+1}_reframed.mp4")
                 try:
                     from smart_reframe import smart_reframe
-                    smart_reframe(raw_clip, reframed, target_w=1080, target_h=1920)
+                    smart_reframe(raw_clip, reframed, target_w=720, target_h=1280)
                 except Exception as e:
                     print(f"CLIP {i+1}: smart_reframe failed ({e}), falling back to static crop")
                     fallback_cmd = [
                         'ffmpeg', '-y', '-i', raw_clip,
-                        '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase:flags=lanczos,crop=1080:1920,setsar=1,format=yuv420p',
-                        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+                        '-vf', 'scale=720:1280:force_original_aspect_ratio=increase:flags=lanczos,crop=720:1280,setsar=1,format=yuv420p',
+                        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                         '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+                        '-threads', '2', '-x264-opts', 'threads=2:bframes=0:ref=1',
                         reframed
                     ]
                     _ffmpeg(fallback_cmd, f"clip{i+1}_fallback_crop", timeout=300)
@@ -2181,13 +2182,31 @@ Return JSON with this exact format:
                     print(f"CLIP {i+1}: reframing failed, skipping")
                     continue
 
-                # ── Step 3: Mix audio + attach SRT metadata ──
+                # ── Step 3: Burn-in subtitles + mix music ──
+                # Generate ASS karaoke subtitles for burn-in
+                ass_path = os.path.join(tempfile.gettempdir(), f"{job_id}_clip{i+1}.ass")
+                if srt_has_data:
+                    try:
+                        generate_ass_karaoke(
+                            words_data, clip_start, clip["end"], ass_path,
+                            target_w=720, target_h=1280, mode='word'
+                        )
+                    except Exception as e:
+                        print(f"CLIP {i+1}: ASS generation failed ({e}), falling back to SRT")
+                        ass_path = None
+                else:
+                    ass_path = None
+
+                # Build ffmpeg: burn-in subs (requires re-encode) + mix audio
+                vf_parts = []
+                if ass_path and os.path.exists(ass_path) and os.path.getsize(ass_path) > 100:
+                    safe_ass = ass_path.replace('\\', '/').replace(':', '\\:')
+                    vf_parts.append(f"subtitles={safe_ass}:fontsdir=/usr/share/fonts/truetype")
+
                 cmd = ['ffmpeg', '-y', '-i', reframed]
                 if music_path:
                     music_path_ff = music_path.replace('\\', '/')
                     cmd += ['-stream_loop', '-1', '-i', music_path_ff]
-                if srt_has_data:
-                    cmd += ['-i', srt_path]
 
                 input_idx = 1
                 if music_path:
@@ -2198,25 +2217,26 @@ Return JSON with this exact format:
                     cmd += ['-map', '0:a']
 
                 cmd += ['-map', '0:v']
-                cmd += ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '256k', '-shortest']
 
-                sub_input_idx = 2 if music_path else 1
-                if srt_has_data:
-                    cmd += ['-map', f'{sub_input_idx}:s']
-                    cmd += ['-c:s', 'mov_text', '-disposition:s:0', 'default']
-
-                cmd += ['-movflags', '+faststart', '-y', no_subs]
-                _ffmpeg(cmd, f"clip{i+1}_mux", timeout=180)
-
-                if os.path.exists(no_subs) and os.path.getsize(no_subs) >= 1024:
-                    output_path = no_subs
+                if vf_parts:
+                    cmd += ['-vf', ','.join(vf_parts)]
+                    cmd += ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                            '-pix_fmt', 'yuv420p', '-threads', '2',
+                            '-x264-opts', 'threads=2:bframes=0:ref=1']
                 else:
-                    print(f"CLIP {i+1}: no rendered output, skipping")
+                    cmd += ['-c:v', 'copy']
+
+                cmd += ['-c:a', 'aac', '-b:a', '256k', '-shortest']
+                cmd += ['-movflags', '+faststart', '-y', output_path]
+                _ffmpeg(cmd, f"clip{i+1}_final", timeout=300)
+
+                if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+                    print(f"CLIP {i+1}: final render failed, skipping")
                     continue
 
                 jobs_store[job_id] = {"status": "processing", "message": f"Uploading clip {i+1}..."}
 
-                # 1. Upload video (no subs burned) to Supabase Storage
+                # 1. Upload video (with burned-in subs) to Supabase Storage
                 storage_path = f"{job_id}/{job_id}_clip{i+1}.mp4"
                 local_files.append(output_path)
                 clip_storage_url = upload_with_verification(
