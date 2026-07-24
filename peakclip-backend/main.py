@@ -398,7 +398,7 @@ async def lifespan(app: FastAPI):
         auth_methods.append("Static PO Token (fallback)")
     if auth_methods:
         print(f"AUTH: available methods: {', '.join(auth_methods)}")
-        print("AUTH: download strategy: proxy-only first 4 attempts, then proxy+cookies+PO token")
+        print("AUTH: download strategy: all attempts use proxy+cookies, android-first strategies")
     else:
         print("AUTH: WARNING — NO authentication methods configured!")
         print("AUTH: YouTube will likely block downloads or return 360p only.")
@@ -1626,22 +1626,24 @@ def process_video_background(job_id: str, user_id: str, url: str):
         except Exception as e:
             print(f"Job {job_id}: cobalt attempt failed: {e}")
 
+        # Strategies ordered by success rate from Railway behind Oxylabs proxy.
+        # The android+skip combo is the only one that succeeded (360p).
         strategies = [
+            {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
+            {'player_client': ['android_vr'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['ios'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['android'], 'player_skip': ['webpage']},
+            {'player_client': ['android']},
+            {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['web_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['mweb'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+            {'player_client': ['web_creator'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
             {},
             {'player_client': ['web']},
-            {'player_client': ['android']},
             {'player_client': ['ios']},
             {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs']},
             {'player_client': ['web_embedded']},
-            {'player_client': ['android_vr']},
-            {'player_client': ['mweb']},
-            {'player_client': ['web_creator']},
-            {'player_client': ['android', 'web']},
-            {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-            {'player_client': ['web_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-            {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-            {'player_client': ['ios'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-            {'player_client': ['tv'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
             {'player_client': ['web'], 'include_incomplete_formats': True},
         ]
         user_agents = [
@@ -1725,49 +1727,34 @@ def process_video_background(job_id: str, user_id: str, url: str):
                     'youtube_include_dash_manifest': True,
                     'youtube_include_hls_manifest': True,
                     'source_address': '0.0.0.0',
+                    'legacy_server_connect': True,
+                    'geo_bypass': True,
                 }
                 if imp:
                     ydl_opts['impersonate'] = imp
-                # Always use proxy from Railway — direct IP is always blocked by YouTube.
-                # The proxy (Oxylabs ISP) provides a clean residential-like IP.
-                # When cookies are added later (attempt >= 4), the proxy IP may differ
-                # from the cookie IP, but YouTube still accepts it.
                 use_proxy = proxy_url and not proxy_disabled
                 if use_proxy:
                     ydl_opts['proxy'] = proxy_url
-                # Phase strategy: first attempts use proxy-only (cleanest),
-                # later attempts add cookies/PO token if proxy-only fails.
-                # Proxy-only worked perfectly in testing (31 formats up to 4K).
-                # Cookies from browser export — provides authenticated YouTube session
-                # Only add cookies after first 4 proxy-only attempts failed
-                add_cookies = attempt >= 4 and has_cookies
-                if add_cookies:
+                # Always use cookies from attempt 0 — proxy-only never works from Railway
+                if has_cookies:
                     ydl_opts['cookiefile'] = COOKIES_PATH
                 extractor_args = {'youtube': cfg} if cfg else {'youtube': {}}
-                if attempt >= 4:
-                    # Phase 2: add PO token and cookies as fallback
-                    if po_token:
-                        extractor_args['youtube']['po_token'] = po_token
-                    if visitor_data:
-                        extractor_args['youtube']['visitor_data'] = visitor_data
-                    if BGUTIL_POT_AVAILABLE:
-                        extractor_args['youtubepot-bgutilhttp'] = {}
-                else:
-                    # Phase 1: proxy-only — disable bgutil PO token plugin entirely.
-                    # The bgutil headless Chrome connects to YouTube from Railway's IP
-                    # (NOT through the proxy), which causes YouTube to flag the session.
-                    # Point it at an invalid port so it fails silently.
-                    extractor_args['youtubepot-bgutilhttp'] = {'server_url': 'http://127.0.0.1:0'}
+                # Always enable PO token and bgutil as fallback
+                if po_token:
+                    extractor_args['youtube']['po_token'] = po_token
+                if visitor_data:
+                    extractor_args['youtube']['visitor_data'] = visitor_data
+                if BGUTIL_POT_AVAILABLE:
+                    extractor_args['youtubepot-bgutilhttp'] = {}
                 if extractor_args['youtube'] or 'youtubepot-bgutilhttp' in extractor_args:
                     ydl_opts['extractor_args'] = extractor_args
-                phase = "proxy-only" if not add_cookies else "proxy+cookies"
-                print(f"yt-dlp attempt {attempt+1}/{max_attempts} strategy={cfg} format={fmt} imp={imp} proxy={'yes' if use_proxy else 'no'} cookies={'yes' if add_cookies else 'no'} phase={phase}")
+                print(f"yt-dlp attempt {attempt+1}/{max_attempts} strategy={cfg} format={fmt} imp={imp} proxy={'yes' if use_proxy else 'no'} cookies={'yes' if has_cookies else 'no'}")
                 # Run yt-dlp in a subprocess so we can hard-kill it on timeout
                 ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
                 sub_opts = dict(ydl_opts)
                 sub_opts['url'] = url
                 try:
-                    sub_timeout = 60 if attempt < 4 else 120 if attempt < 8 else 300
+                    sub_timeout = 45 if attempt < 4 else 90 if attempt < 8 else 180
                     result = subprocess.run(
                         [sys.executable, ytdlp_script, json.dumps(sub_opts)],
                         capture_output=True,
@@ -2200,7 +2187,7 @@ Return JSON with this exact format:
                         '-vf', 'scale=720:1280:force_original_aspect_ratio=increase:flags=lanczos,crop=720:1280,setsar=1,format=yuv420p',
                         '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                         '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-                        '-threads', '2', '-x264-opts', 'threads=2:bframes=0:ref=1',
+                        '-threads', '2', '-x264-params', 'threads=2:bframes=0:ref=1',
                         reframed
                     ]
                     _ffmpeg(fallback_cmd, f"clip{i+1}_fallback_crop", timeout=300)
@@ -2249,7 +2236,7 @@ Return JSON with this exact format:
                     cmd += ['-vf', ','.join(vf_parts)]
                     cmd += ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
                             '-pix_fmt', 'yuv420p', '-threads', '2',
-                            '-x264-opts', 'threads=2:bframes=0:ref=1']
+                            '-x264-params', 'threads=2:bframes=0:ref=1']
                 else:
                     cmd += ['-c:v', 'copy']
 

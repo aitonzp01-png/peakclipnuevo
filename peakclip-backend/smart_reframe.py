@@ -185,7 +185,7 @@ def smart_reframe(input_path, output_path, target_w=1080, target_h=1920,
             "-c:v", "libx264", "-preset", "ultrafast", "-crf", "20",
             "-pix_fmt", "yuv420p",
             "-threads", "2",
-            "-x264-opts", "threads=2:bframes=0:ref=1:me=dia:subme=0:rc-lookahead=10",
+            "-x264-params", "threads=2:bframes=0:ref=1:me=dia:subme=0:rc-lookahead=10",
             "-movflags", "+faststart",
             raw_video,
         ]
