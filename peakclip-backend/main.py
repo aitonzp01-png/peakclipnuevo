@@ -3219,6 +3219,55 @@ class RankingRequest(BaseModel):
 ranking_jobs: dict = {}
 
 
+async def ensure_rankings_table():
+    """Create rankings table if it doesn't exist."""
+    supabase_url = os.getenv("SUPABASE_URL")
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    if not supabase_url or not service_key:
+        return False
+    project_ref = supabase_url.split("https://")[1].split(".")[0]
+    sql = """
+CREATE TABLE IF NOT EXISTS public.rankings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  topic TEXT NOT NULL,
+  count INTEGER DEFAULT 5,
+  video_length INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'processing',
+  results JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
+CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
+"""
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            headers = {
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json",
+            }
+            for url in [
+                f"https://{project_ref}.supabase.co/sql/v1/query",
+                f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+            ]:
+                try:
+                    res = await client.post(url, json={"query": sql}, headers=headers)
+                    print(f"RANKINGS TABLE CREATE: {url.split('/')[-1]} -> {res.status_code} {res.text[:200]}")
+                    if res.status_code == 200:
+                        try:
+                            await client.post(url, json={"query": "NOTIFY pgrst, 'reload schema'"}, headers=headers)
+                        except Exception:
+                            pass
+                        return True
+                except Exception as e:
+                    print(f"RANKINGS TABLE CREATE: {url.split('/')[-1]} error: {e}")
+    except Exception as e:
+        print(f"RANKINGS TABLE CREATE: {e}")
+    return False
+
+
 @app.post("/api/ranking")
 async def start_ranking(req: RankingRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     await check_rate_limit(f"ranking:{user['sub']}")
@@ -3243,14 +3292,34 @@ async def start_ranking(req: RankingRequest, background_tasks: BackgroundTasks, 
     ranking_id = str(uuid.uuid4())
     ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 0, "results": None}
 
-    supabase.table("rankings").insert({
-        "id": ranking_id,
-        "user_id": user_id,
-        "topic": req.topic,
-        "count": req.count,
-        "video_length": req.video_length,
-        "status": "processing",
-    }).execute()
+    try:
+        supabase.table("rankings").insert({
+            "id": ranking_id,
+            "user_id": user_id,
+            "topic": req.topic,
+            "count": req.count,
+            "video_length": req.video_length,
+            "status": "processing",
+        }).execute()
+    except Exception as insert_err:
+        print(f"RANKING INSERT FAILED: {insert_err}")
+        print("Attempting to create rankings table...")
+        created = await ensure_rankings_table()
+        if created:
+            try:
+                supabase.table("rankings").insert({
+                    "id": ranking_id,
+                    "user_id": user_id,
+                    "topic": req.topic,
+                    "count": req.count,
+                    "video_length": req.video_length,
+                    "status": "processing",
+                }).execute()
+            except Exception as retry_err:
+                print(f"RANKING INSERT RETRY FAILED: {retry_err}")
+                raise HTTPException(status_code=500, detail=f"Failed to create ranking: {retry_err}")
+        else:
+            raise HTTPException(status_code=500, detail="Failed to create rankings table")
 
     background_tasks.add_task(run_ranking_background, ranking_id, user_id, req.topic, req.count, req.video_length, req.language)
     return {"ranking_id": ranking_id, "status": "processing"}
@@ -3493,10 +3562,13 @@ Return JSON: {{"clips": [
 
         ranking_jobs[ranking_id] = {"status": "done", "user_id": user_id, "step": "done", "progress": 100, "results": top_moments, "total_analyzed": len(candidate_videos), "total_moments": len(all_moments)}
 
-        supabase.table("rankings").update({
-            "status": "done",
-            "results": json.dumps(top_moments),
-        }).eq("id", ranking_id).execute()
+        try:
+            supabase.table("rankings").update({
+                "status": "done",
+                "results": json.dumps(top_moments),
+            }).eq("id", ranking_id).execute()
+        except Exception as update_err:
+            print(f"RANKING {ranking_id}: failed to update results in DB: {update_err}")
 
         print(f"RANKING {ranking_id}: done — {len(top_moments)} ranked moments from {len(candidate_videos)} videos, {len(all_moments)} total moments")
 
@@ -3504,7 +3576,10 @@ Return JSON: {{"clips": [
         print(f"RANKING {ranking_id}: fatal error: {e}")
         traceback.print_exc()
         ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": str(e)[:200]}
-        supabase.table("rankings").update({"status": "error", "error": str(e)[:200]}).eq("id", ranking_id).execute()
+        try:
+            supabase.table("rankings").update({"status": "error", "error": str(e)[:200]}).eq("id", ranking_id).execute()
+        except Exception:
+            pass
     finally:
         for f in local_files:
             try:
