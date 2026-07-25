@@ -3588,6 +3588,344 @@ Return JSON: {{"clips": [
                 pass
 
 
+# ── RANKING VIDEO GENERATION: creates the actual ranked video ──
+
+ranking_gen_jobs: dict = {}
+
+
+@app.post("/api/ranking/{ranking_id}/generate")
+async def generate_ranking_video(ranking_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    await check_rate_limit(f"ranking-gen:{user['sub']}")
+    user_id = user["sub"]
+
+    results = ranking_jobs.get(ranking_id, {}).get("results")
+    if not results:
+        try:
+            db_result = supabase.table("rankings").select("results").eq("id", ranking_id).eq("user_id", user_id).execute()
+            if db_result.data and db_result.data[0].get("results"):
+                raw = db_result.data[0]["results"]
+                results = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            pass
+    if not results or len(results) == 0:
+        raise HTTPException(status_code=404, detail="No ranking results found. Run ranking first.")
+
+    gen_id = str(uuid.uuid4())
+    ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 0, "message": "Starting video generation...", "clip_id": None}
+
+    background_tasks.add_task(generate_ranking_video_background, gen_id, ranking_id, user_id, results)
+    return {"gen_id": gen_id, "status": "processing"}
+
+
+@app.get("/api/ranking/gen/{gen_id}")
+async def get_ranking_gen_status(gen_id: str, user: dict = Depends(get_current_user)):
+    job = ranking_gen_jobs.get(gen_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Generation job not found")
+    if job.get("user_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="Not your job")
+    return job
+
+
+def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str, results: list):
+    local_files = []
+    temp_files = []
+
+    try:
+        topic = ranking_jobs.get(ranking_id, {}).get("topic", "") or "Top Ranking"
+        count = len(results)
+        font_bold = "/usr/share/fonts/truetype/Montserrat-ExtraBold.ttf"
+        font_reg = "/usr/share/fonts/truetype/Montserrat-Bold.ttf"
+        if not os.path.exists(font_bold):
+            font_bold = "/usr/share/fonts/truetype/Montserrat-Bold.ttf"
+        if not os.path.exists(font_reg):
+            font_reg = "/usr/share/fonts/truetype/Inter-Bold.ttf"
+
+        W, H = 720, 1280
+
+        def _ffmpeg(cmd, label, timeout=300):
+            print(f"RANKING GEN {label}: {' '.join(cmd[:6])}...")
+            t0 = time.time()
+            r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+            elapsed = time.time() - t0
+            ok = r.returncode == 0 and os.path.exists(cmd[-1]) and os.path.getsize(cmd[-1]) > 1024
+            print(f"RANKING GEN {label}: {elapsed:.1f}s rc={r.returncode} ok={ok}")
+            if not ok and r.stderr:
+                print(f"  stderr[-500]: {r.stderr.decode(errors='replace')[-500:]}")
+            return ok
+
+        # ── Step 1: Create intro card ──
+        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 5, "message": "Creating intro card...", "clip_id": None}
+        intro_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_intro.mp4")
+        local_files.append(intro_path)
+        safe_topic = topic.replace("'", "'\\''").replace(":", "\\:")
+        intro_text_lines = safe_topic.split(" ")
+        line1 = " ".join(intro_text_lines[:len(intro_text_lines)//2] or intro_text_lines[:3])
+        line2 = " ".join(intro_text_lines[len(intro_text_lines)//2:] or intro_text_lines[3:])
+        if not line2:
+            line2 = ""
+
+        intro_drawtext = f"drawtext=fontfile='{font_bold}':text='{line1}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h/2)-80:shadowcolor=black:shadowx=2:shadowy=2"
+        if line2:
+            intro_drawtext += f",drawtext=fontfile='{font_bold}':text='{line2}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h/2):shadowcolor=black:shadowx=2:shadowy=2"
+        intro_drawtext += f",drawtext=fontfile='{font_reg}':text='TOP {count}':fontcolor=#c4ff3d:fontsize=36:x=(w-text_w)/2:y=(h/2)+80:shadowcolor=black:shadowx=2:shadowy=2"
+        intro_drawtext += ",drawbox=x=0:y=0:w=iw:h=ih:color=0x0a0a0a:t=fill"
+
+        intro_cmd = [
+            'ffmpeg', '-y', '-f', 'lavfi', '-i', f'color=c=0x0a0a0a:s={W}x{H}:d=3:r=30',
+            '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+            '-vf', intro_drawtext,
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-t', '3', '-shortest',
+            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+            '-threads', '2',
+            intro_path
+        ]
+        _ffmpeg(intro_cmd, "intro", timeout=60)
+
+        # ── Step 2: Download + process each ranked clip ──
+        clip_paths = []
+        proxy_url = os.environ.get('YOUTUBE_PROXY')
+        has_cookies = os.path.exists(COOKIES_PATH)
+        ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
+
+        rank_colors = ["#FFD700", "#C0C0C0", "#CD7F32", "#c4ff3d", "#60A5FA", "#F59E0B", "#EC4899", "#8B5CF6", "#10B981", "#EF4444"]
+
+        for idx, moment in enumerate(results):
+            progress = 10 + int(70 * idx / max(len(results), 1))
+            ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": progress, "message": f"Processing clip {idx+1}/{len(results)}: {moment.get('title', '')[:40]}...", "clip_id": None}
+
+            video_url = moment.get("video_url", "")
+            start_t = moment.get("start", 0)
+            end_t = moment.get("end", 0)
+            duration = max(10, end_t - start_t)
+            rank_num = moment.get("rank", idx + 1)
+            clip_title = moment.get("title", moment.get("video_title", f"#{rank_num}"))[:50]
+            rank_color = rank_colors[(idx) % len(rank_colors)]
+
+            if not video_url:
+                continue
+
+            raw_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_raw{idx}.mp4")
+            cropped_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_crop{idx}.mp4")
+            overlay_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_over{idx}.mp4")
+            local_files.extend([raw_path, cropped_path, overlay_path])
+
+            # Download
+            dl_opts = {
+                'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
+                'outtmpl': raw_path,
+                'quiet': True, 'no_warnings': True, 'noplaylist': True,
+                'socket_timeout': 45, 'geo_bypass': True, 'no_check_certificate': True,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+                },
+            }
+            if proxy_url:
+                dl_opts['proxy'] = proxy_url
+            if has_cookies:
+                dl_opts['cookiefile'] = COOKIES_PATH
+            dl_opts['extractor_args'] = {'youtube': {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True}}
+            if BGUTIL_POT_AVAILABLE:
+                dl_opts['extractor_args']['youtubepot-bgutilhttp'] = {}
+
+            dl_sub_opts = dict(dl_opts)
+            dl_sub_opts['url'] = video_url
+            try:
+                dl_result = subprocess.run(
+                    [sys.executable, ytdlp_script, json.dumps(dl_sub_opts)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if dl_result.returncode != 0 or not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1024:
+                    print(f"RANKING GEN: clip {idx+1} download failed, skipping")
+                    continue
+            except Exception as e:
+                print(f"RANKING GEN: clip {idx+1} download error: {e}")
+                continue
+
+            # Crop to 720x1280 vertical
+            crop_ok = _ffmpeg([
+                'ffmpeg', '-y', '-ss', str(start_t), '-i', raw_path, '-t', str(duration),
+                '-vf', f'scale={W}:{H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{H},setsar=1,format=yuv420p',
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+                '-threads', '2', '-x264-params', 'threads=2:bframes=0:ref=1',
+                '-an',
+                cropped_path
+            ], f"crop{idx}", timeout=300)
+
+            if not crop_ok:
+                # Fallback: just extract
+                _ffmpeg([
+                    'ffmpeg', '-y', '-ss', str(start_t), '-i', raw_path, '-t', str(duration),
+                    '-c', 'copy', cropped_path
+                ], f"extract{idx}", timeout=120)
+                if not os.path.exists(cropped_path) or os.path.getsize(cropped_path) < 1024:
+                    continue
+
+            # Add ranking overlay: number badge + title + rank bar
+            safe_title = clip_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
+            safe_rank = str(rank_num).replace("'", "'\\''")
+
+            # Bottom gradient + title + rank number
+            overlay_filter = (
+                f"drawbox=x=0:y=ih-180:w=iw:h=180:color=black@0.6:t=fill,"
+                f"drawtext=fontfile='{font_bold}':text='#{safe_rank}':"
+                f"fontcolor={rank_color}:fontsize=72:"
+                f"x=40:y=ih-170:"
+                f"shadowcolor=black@0.8:shadowx=3:shadowy=3,"
+                f"drawtext=fontfile='{font_reg}':text='{safe_title}':"
+                f"fontcolor=white:fontsize=32:"
+                f"x=140:y=ih-120:"
+                f"shadowcolor=black@0.8:shadowx=2:shadowy=2,"
+                f"drawtext=fontfile='{font_reg}':text='TOP {count} — {safe_topic[:30]}':"
+                f"fontcolor=#c4ff3d:fontsize=22:"
+                f"x=140:y=ih-70:"
+                f"shadowcolor=black@0.6:shadowx=1:shadowy=1"
+            )
+
+            overlay_ok = _ffmpeg([
+                'ffmpeg', '-y', '-i', cropped_path,
+                '-vf', overlay_filter,
+                '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+                '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+                '-threads', '2', '-x264-params', 'threads=2:bframes=0:ref=1',
+                '-an',
+                overlay_path
+            ], f"overlay{idx}", timeout=300)
+
+            if not overlay_ok:
+                overlay_path = cropped_path
+
+            clip_paths.append(overlay_path)
+
+        # ── Step 3: Generate silent audio for all clips ──
+        for ci, cp in enumerate(clip_paths):
+            silent_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_silent{ci}.mp4")
+            temp_files.append(silent_path)
+            _ffmpeg([
+                'ffmpeg', '-y', '-i', cp,
+                '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
+                '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
+                '-map', '0:v:0', '-map', '1:a:0',
+                '-shortest', '-t', '10',
+                '-pix_fmt', 'yuv420p',
+                silent_path
+            ], f"silent{ci}", timeout=60)
+            if os.path.exists(silent_path) and os.path.getsize(silent_path) > 1024:
+                clip_paths[ci] = silent_path
+
+        # ── Step 4: Concatenate all clips ──
+        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 85, "message": "Stitching final video...", "clip_id": None}
+
+        concat_list = os.path.join(tempfile.gettempdir(), f"{gen_id}_concat.txt")
+        temp_files.append(concat_list)
+        concat_items = []
+        if os.path.exists(intro_path) and os.path.getsize(intro_path) > 1024:
+            concat_items.append(intro_path)
+        concat_items.extend(clip_paths)
+
+        if len(concat_items) == 0:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "No clips could be processed"}
+            return
+
+        with open(concat_list, 'w') as f:
+            for item in concat_items:
+                safe = item.replace('\\', '/').replace("'", "'\\''")
+                f.write(f"file '{safe}'\n")
+
+        final_output = os.path.join(tempfile.gettempdir(), f"{gen_id}_final.mp4")
+        local_files.append(final_output)
+        concat_ok = _ffmpeg([
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+            '-i', concat_list,
+            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
+            '-c:a', 'aac', '-b:a', '128k',
+            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+            '-threads', '2',
+            final_output
+        ], "concat", timeout=600)
+
+        if not concat_ok or not os.path.exists(final_output) or os.path.getsize(final_output) < 1024:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Failed to create final video"}
+            return
+
+        # ── Step 5: Upload to Supabase Storage ──
+        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 92, "message": "Uploading video...", "clip_id": None}
+
+        clip_id = str(uuid.uuid4())
+        storage_path = f"clips/{clip_id}.mp4"
+        clip_url = upload_with_verification(supabase, "clips", final_output, storage_path, "video/mp4")
+        if not clip_url:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Upload failed"}
+            return
+
+        # Generate thumbnail from intro
+        thumb_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_thumb.jpg")
+        local_files.append(thumb_path)
+        subprocess.run([
+            'ffmpeg', '-y', '-i', intro_path, '-vframes', '1', '-q:v', '2', thumb_path
+        ], capture_output=True, timeout=30)
+        thumb_url = ""
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
+            thumb_storage = f"thumbnails/{clip_id}.jpg"
+            thumb_url = upload_with_verification(supabase, "clips", thumb_path, thumb_storage, "image/jpeg") or ""
+
+        # ── Step 6: Save clip record in DB ──
+        total_duration = 0
+        for ci in concat_items:
+            try:
+                probe = subprocess.run([
+                    'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+                    '-of', 'default=noprint_wrappers=1:nokey=1', ci
+                ], capture_output=True, text=True, timeout=10)
+                if probe.returncode == 0:
+                    total_duration += float(probe.stdout.strip() or 0)
+            except Exception:
+                total_duration += 10
+
+        clip_record = {
+            "id": clip_id,
+            "user_id": user_id,
+            "title": f"AI Ranking: {topic[:60]}",
+            "status": "done",
+            "video_url": clip_url,
+            "thumbnail_url": thumb_url,
+            "duration": round(total_duration, 1),
+            "start_time": 0,
+            "end_time": round(total_duration, 1),
+            "youtube_video_id": None,
+            "youtube_thumbnail": thumb_url or None,
+            "youtube_title": f"AI Ranking: {topic[:80]}",
+            "youtube_channel": "AI Rankings",
+            "youtube_duration": round(total_duration, 1),
+        }
+        try:
+            supabase.table("clips").insert(clip_record).execute()
+        except Exception as db_err:
+            print(f"RANKING GEN: DB insert failed: {db_err}")
+            try:
+                fallback = {k: v for k, v in clip_record.items() if k not in ("hook_score", "mood", "reason", "engagement_factors", "retention_prediction", "words_json")}
+                supabase.table("clips").insert(fallback).execute()
+            except Exception:
+                pass
+
+        ranking_gen_jobs[gen_id] = {"status": "done", "user_id": user_id, "progress": 100, "message": "Done!", "clip_id": clip_id}
+        print(f"RANKING GEN {gen_id}: DONE — clip_id={clip_id} duration={total_duration:.1f}s")
+
+    except Exception as e:
+        print(f"RANKING GEN {gen_id}: fatal error: {e}")
+        traceback.print_exc()
+        ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": str(e)[:200]}
+    finally:
+        for f in local_files + temp_files:
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
+
+
 @app.get("/admin/oauth-status")
 async def admin_oauth_status(request: Request):
     auth = request.headers.get('X-Admin-Key', '')

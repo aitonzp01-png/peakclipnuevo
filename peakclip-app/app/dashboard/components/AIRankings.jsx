@@ -200,6 +200,9 @@ export default function AIRankings({ setToast }) {
   const [rankingId, setRankingId] = useState(null);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
+  const [genId, setGenId] = useState(null);
+  const [genProgress, setGenProgress] = useState(0);
+  const [genMessage, setGenMessage] = useState('');
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -315,8 +318,79 @@ export default function AIRankings({ setToast }) {
     setRankingId(null);
     setResults(null);
     setError(null);
+    setGenId(null);
+    setGenProgress(0);
+    setGenMessage('');
     if (timerRef.current) clearInterval(timerRef.current);
   }, []);
+
+  const generateVideo = useCallback(async () => {
+    if (!rankingId) return;
+    setPhase('generating');
+    setGenProgress(0);
+    setGenMessage('Starting video generation...');
+    try {
+      const { data: { session } } = await getSupabaseClient().auth.getSession();
+      if (!session) {
+        setToast({ type: 'error', text: 'Please log in first' });
+        setPhase('results');
+        return;
+      }
+      const response = await fetch(`${BACKEND_URL}/api/ranking/${rankingId}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+      });
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Failed to start generation');
+      }
+      const data = await response.json();
+      setGenId(data.gen_id);
+    } catch (err) {
+      console.error('Generate error:', err);
+      setToast({ type: 'error', text: err.message || 'Failed to generate video' });
+      setPhase('results');
+    }
+  }, [rankingId, setToast]);
+
+  // Poll generation status
+  useEffect(() => {
+    if (!genId || phase !== 'generating') return;
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const { data: { session } } = await getSupabaseClient().auth.getSession();
+        if (!session || !isMounted) return;
+        const res = await fetch(`${BACKEND_URL}/api/ranking/gen/${genId}`, {
+          headers: { 'Authorization': `Bearer ${session.access_token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+        setGenProgress(data.progress || 0);
+        setGenMessage(data.message || 'Processing...');
+        if (data.status === 'done') {
+          clearInterval(interval);
+          if (data.clip_id) {
+            window.location.href = `/editor?id=${data.clip_id}`;
+          } else {
+            setToast({ type: 'success', text: 'Video generated!' });
+            setPhase('results');
+          }
+        } else if (data.status === 'error') {
+          clearInterval(interval);
+          setToast({ type: 'error', text: data.message || 'Generation failed' });
+          setPhase('results');
+        }
+      } catch (err) {
+        console.error('Gen poll error:', err);
+      }
+    }, 2500);
+    return () => { isMounted = false; clearInterval(interval); };
+  }, [genId, phase, setToast]);
 
   return (
     <motion.div
@@ -542,6 +616,34 @@ export default function AIRankings({ setToast }) {
         </div>
       )}
 
+      {phase === 'generating' && (
+        <div className="db-input-card ar-sim-card" style={{ maxWidth: '560px' }}>
+          <motion.div
+            className="ar-sim-header"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+          >
+            <motion.span
+              className="ar-sim-title"
+              initial={{ scale: 0.9 }}
+              animate={{ scale: 1 }}
+              transition={{ type: 'spring', stiffness: 200, damping: 15 }}
+            >
+              <Clapperboard size={28} strokeWidth={1.5} className="ar-sim-title-icon" />
+              Generating your ranking video
+            </motion.span>
+            <p className="ar-sim-subtitle">
+              Creating intro + ranked clips with overlays — this takes a minute
+            </p>
+            <p className="ar-sim-status">{genMessage}</p>
+          </motion.div>
+          <div className="ar-sim-progress-row" style={{ padding: '0 20px 20px' }}>
+            <ProgressBar progress={genProgress} />
+            <span className="ar-sim-step-pct">{Math.round(genProgress)}%</span>
+          </div>
+        </div>
+      )}
+
       {phase === 'results' && (
         <div className="db-input-card ar-results-card" style={{ maxWidth: '720px' }}>
           <motion.div
@@ -568,6 +670,16 @@ export default function AIRankings({ setToast }) {
               <ResultCard key={idx} item={item} index={idx} />
             ))}
           </div>
+
+          <motion.button
+            onClick={generateVideo}
+            className="db-primary-btn ar-generate-btn"
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <Clapperboard size={18} strokeWidth={1.5} />
+            Generate Ranking Video
+          </motion.button>
 
           <button onClick={resetForm} className="ar-back-btn">
             <ArrowLeft size={14} strokeWidth={2} />
