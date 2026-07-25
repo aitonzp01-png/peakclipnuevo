@@ -23,7 +23,7 @@ import {
   RefreshCw,
   AlertCircle,
 } from 'lucide-react';
-import { getSupabaseClient } from '../../../../lib/supabase';
+import { getSupabaseClient } from '../../../lib/supabase';
 import '../dashboard.css';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
