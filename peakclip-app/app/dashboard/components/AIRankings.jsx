@@ -19,9 +19,14 @@ import {
   Globe,
   Music,
   MessageCircle,
-  ChevronRight,
+  ExternalLink,
+  RefreshCw,
+  AlertCircle,
 } from 'lucide-react';
+import { getSupabaseClient } from '../../../../lib/supabase';
 import '../dashboard.css';
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL;
 
 const SOURCES = [
   { id: 'youtube', label: 'YouTube', icon: Youtube, enabled: true },
@@ -40,54 +45,21 @@ const VIDEO_LENGTHS = [30, 45, 60];
 
 const LANGUAGES = ['English', 'Spanish', 'Portuguese'];
 
-const SIMULATION_STEPS = [
-  {
-    icon: Bot,
-    label: 'AI Research Agent',
-    subtitle: 'Searching YouTube...',
-    checkText: '245 videos found',
-  },
-  {
-    icon: Search,
-    label: 'Analyzing content',
-    subtitle: 'Evaluating engagement metrics...',
-    checkText: 'Content analyzed',
-  },
-  {
-    icon: Zap,
-    label: 'Detecting viral moments',
-    subtitle: 'Scanning for peak retention...',
-    checkText: 'Viral moments detected',
-  },
-  {
-    icon: BarChart3,
-    label: 'Ranking clips',
-    subtitle: 'Sorting by viral potential...',
-    checkText: 'Ranking complete',
-  },
-  {
-    icon: Clapperboard,
-    label: 'Preparing final ranking',
-    subtitle: 'Generating previews...',
-    checkText: 'Ready',
-  },
+const STEP_CONFIG = [
+  { icon: Bot, label: 'AI Research Agent' },
+  { icon: Search, label: 'Analyzing content' },
+  { icon: Zap, label: 'Detecting viral moments' },
+  { icon: BarChart3, label: 'Ranking clips' },
+  { icon: Clapperboard, label: 'Preparing final ranking' },
 ];
 
-const STEP_SUBTITLES = [
-  'Searching YouTube for relevant videos...',
-  'Analyzing engagement and view metrics...',
-  'Detecting viral moments in each video...',
-  'Ranking clips by viral potential score...',
-  'Preparing your final ranking preview...',
-];
-
-const MOCK_RESULTS = [
-  { rank: 1, title: 'Epic Parkour Fail', score: 98, duration: 5.4 },
-  { rank: 2, title: 'Unbelievable Skateboard Trick', score: 94, duration: 7.2 },
-  { rank: 3, title: 'Cat vs. Cucumber Compilation', score: 89, duration: 6.8 },
-  { rank: 4, title: 'Funny Baby Moments 2026', score: 85, duration: 8.1 },
-  { rank: 5, title: 'Incredible Street Dance Battle', score: 82, duration: 4.9 },
-];
+const STEP_MAP = {
+  searching: 0,
+  downloading: 1,
+  analyzing: 1,
+  ranking: 3,
+  done: 4,
+};
 
 const MEDAL_COLORS = ['#ffd700', '#c0c0c0', '#cd7f32'];
 
@@ -132,7 +104,7 @@ function SimulationStep({ step, progress, isActive, isComplete, stepIndex }) {
         <div className="ar-sim-step-body">
           <div className="ar-sim-step-label-row">
             <span className="ar-sim-step-label">{step.label}</span>
-            {isComplete && <span className="ar-sim-step-check-text">{step.checkText}</span>}
+            {isComplete && <span className="ar-sim-step-check-text">Done</span>}
             {isActive && (
               <span className="ar-sim-step-dots">
                 <span className="ar-dot-pulse" />
@@ -140,7 +112,7 @@ function SimulationStep({ step, progress, isActive, isComplete, stepIndex }) {
             )}
           </div>
           <span className="ar-sim-step-subtitle">
-            {isComplete ? step.checkText : isActive ? step.subtitle : ''}
+            {isComplete ? 'Done' : isActive ? 'Working...' : ''}
           </span>
           {isActive && (
             <div className="ar-sim-progress-row">
@@ -158,6 +130,7 @@ function ResultCard({ item, index }) {
   const IconComponent = index < 3 ? Medal : 'span';
   const medalProps = index < 3 ? { size: 22, strokeWidth: 1.5, color: MEDAL_COLORS[index] } : {};
   const rankLabel = index >= 3 ? `#${item.rank}` : '';
+  const score = Math.round((item.hook_score || 5) * 10 + (item.retention_prediction || 50) / 10);
 
   return (
     <motion.div
@@ -175,25 +148,41 @@ function ResultCard({ item, index }) {
         )}
       </div>
       <div className="ar-result-thumb">
-        <div className="ar-result-thumb-bg">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="23 7 16 12 23 17 23 7" />
-            <rect x="1" y="5" width="15" height="14" rx="2" />
-          </svg>
-        </div>
-        <span className="ar-result-duration">{item.duration}s</span>
+        {item.video_thumbnail ? (
+          <img src={item.video_thumbnail} alt="" className="ar-result-thumb-img" />
+        ) : (
+          <div className="ar-result-thumb-bg">
+            <Play size={24} strokeWidth={1.5} />
+          </div>
+        )}
+        <span className="ar-result-duration">{Math.round(item.end - item.start)}s</span>
       </div>
       <div className="ar-result-info">
-        <span className="ar-result-title">{item.title}</span>
+        <span className="ar-result-title">{item.title || item.video_title}</span>
+        <span className="ar-result-source">{item.video_title}</span>
         <div className="ar-result-score-row">
           <Star size={12} strokeWidth={1.5} className="ar-result-score-star" />
-          <span className="ar-result-score-text">Score {item.score}/100</span>
+          <span className="ar-result-score-text">Score {score}/100</span>
+          <span className="ar-result-mood">{item.mood}</span>
         </div>
+        {item.engagement_factors && item.engagement_factors.length > 0 && (
+          <div className="ar-result-tags">
+            {item.engagement_factors.slice(0, 3).map((f, i) => (
+              <span key={i} className="ar-result-tag">{f.replace(/_/g, ' ')}</span>
+            ))}
+          </div>
+        )}
       </div>
-      <button onClick={(e) => e.stopPropagation()} className="ar-result-preview-btn">
-        <Play size={12} strokeWidth={2.5} />
-        Preview
-      </button>
+      <a
+        href={item.video_url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="ar-result-preview-btn"
+      >
+        <ExternalLink size={12} strokeWidth={2} />
+        Source
+      </a>
     </motion.div>
   );
 }
@@ -207,6 +196,10 @@ export default function AIRankings({ setToast }) {
   const [phase, setPhase] = useState('form');
   const [currentStep, setCurrentStep] = useState(0);
   const [stepProgress, setStepProgress] = useState(0);
+  const [rankingMessage, setRankingMessage] = useState('');
+  const [rankingId, setRankingId] = useState(null);
+  const [results, setResults] = useState(null);
+  const [error, setError] = useState(null);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -223,7 +216,7 @@ export default function AIRankings({ setToast }) {
     setSources((prev) => (prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id]));
   };
 
-  const startSimulation = useCallback(() => {
+  const startRanking = useCallback(async () => {
     if (!topic.trim()) {
       setToast({ type: 'error', text: 'Please enter a ranking topic' });
       return;
@@ -231,43 +224,99 @@ export default function AIRankings({ setToast }) {
     setPhase('simulating');
     setCurrentStep(0);
     setStepProgress(0);
-  }, [topic, setToast]);
+    setError(null);
+    setResults(null);
+    setRankingMessage('Starting AI research...');
+
+    try {
+      const { data: { session } } = await getSupabaseClient().auth.getSession();
+      if (!session) {
+        setToast({ type: 'error', text: 'Please log in first' });
+        setPhase('form');
+        return;
+      }
+
+      const response = await fetch(`${BACKEND_URL}/api/ranking`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          topic: topic.trim(),
+          count: rankingSize,
+          video_length: videoLength,
+          language,
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.detail || 'Failed to start ranking');
+      }
+
+      const data = await response.json();
+      setRankingId(data.ranking_id);
+    } catch (err) {
+      console.error('Ranking start error:', err);
+      setToast({ type: 'error', text: err.message || 'Failed to start ranking' });
+      setPhase('form');
+    }
+  }, [topic, rankingSize, videoLength, language, setToast]);
+
+  // Poll for ranking status
+  useEffect(() => {
+    if (!rankingId || phase !== 'simulating') return;
+
+    let isMounted = true;
+    const interval = setInterval(async () => {
+      try {
+        const { data: { session } } = await getSupabaseClient().auth.getSession();
+        if (!session || !isMounted) return;
+
+        const res = await fetch(`${BACKEND_URL}/api/ranking/${rankingId}`, {
+          headers: { 'Authorization': `Bearer ${session.access_token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+
+        const stepKey = data.step || 'searching';
+        const stepIdx = STEP_MAP[stepKey] || 0;
+        setCurrentStep(stepIdx);
+        setStepProgress(data.progress || 0);
+        setRankingMessage(data.message || 'Processing...');
+
+        if (data.status === 'done') {
+          clearInterval(interval);
+          setResults(data.results || []);
+          setPhase('results');
+        } else if (data.status === 'error') {
+          clearInterval(interval);
+          setError(data.message || 'Ranking failed');
+          setToast({ type: 'error', text: data.message || 'Ranking failed' });
+          setPhase('form');
+        }
+      } catch (err) {
+        console.error('Poll error:', err);
+      }
+    }, 2000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [rankingId, phase, setToast]);
 
   const resetForm = useCallback(() => {
     setPhase('form');
     setCurrentStep(0);
     setStepProgress(0);
+    setRankingId(null);
+    setResults(null);
+    setError(null);
     if (timerRef.current) clearInterval(timerRef.current);
   }, []);
-
-  const handleGenerateVideo = () => {
-    setToast({
-      type: 'info',
-      text: 'Coming Soon — AI Ranking video generation will be available in a future update',
-    });
-  };
-
-  useEffect(() => {
-    if (phase !== 'simulating') return;
-    let progress = 0;
-    const STEP_DURATION_MS = 2000;
-    const INTERVAL_MS = 50;
-    timerRef.current = setInterval(() => {
-      progress += 100 / (STEP_DURATION_MS / INTERVAL_MS);
-      if (progress >= 100) {
-        progress = 0;
-        const nextStep = currentStep + 1;
-        if (nextStep >= SIMULATION_STEPS.length) {
-          clearInterval(timerRef.current);
-          setPhase('results');
-          return;
-        }
-        setCurrentStep(nextStep);
-      }
-      setStepProgress(Math.min(progress, 100));
-    }, INTERVAL_MS);
-    return () => clearInterval(timerRef.current);
-  }, [phase, currentStep]);
 
   return (
     <motion.div
@@ -308,6 +357,7 @@ export default function AIRankings({ setToast }) {
                   onChange={(e) => setTopic(e.target.value)}
                   placeholder="Example: Top 10 Football Goals, Top 5 Parkour Fails..."
                   className="ar-input"
+                  onKeyDown={(e) => e.key === 'Enter' && startRanking()}
                 />
               </div>
             </div>
@@ -444,7 +494,7 @@ export default function AIRankings({ setToast }) {
             </div>
 
             <motion.button
-              onClick={startSimulation}
+              onClick={startRanking}
               className="db-primary-btn ar-generate-btn"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
@@ -475,10 +525,10 @@ export default function AIRankings({ setToast }) {
             <p className="ar-sim-subtitle">
               Researching &ldquo;{topic}&rdquo; — this will just take a moment
             </p>
-            <p className="ar-sim-status">{STEP_SUBTITLES[currentStep]}</p>
+            <p className="ar-sim-status">{rankingMessage}</p>
           </motion.div>
           <div className="ar-sim-steps">
-            {SIMULATION_STEPS.map((step, idx) => (
+            {STEP_CONFIG.map((step, idx) => (
               <SimulationStep
                 key={idx}
                 step={step}
@@ -507,27 +557,17 @@ export default function AIRankings({ setToast }) {
             >
               <Trophy size={32} strokeWidth={1.5} className="ar-results-icon-svg" />
             </motion.div>
-            <h2 className="ar-results-title">Top {rankingSize} Found</h2>
+            <h2 className="ar-results-title">Top {results?.length || rankingSize} Found</h2>
             <p className="ar-results-subtitle">
               Based on AI analysis of &ldquo;{topic}&rdquo;
             </p>
           </motion.div>
 
           <div className="ar-results-list">
-            {MOCK_RESULTS.slice(0, rankingSize).map((item, idx) => (
+            {(results || []).map((item, idx) => (
               <ResultCard key={idx} item={item} index={idx} />
             ))}
           </div>
-
-          <motion.button
-            onClick={handleGenerateVideo}
-            className="db-primary-btn ar-generate-btn"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            <Clapperboard size={18} strokeWidth={1.5} />
-            Generate Ranking Video
-          </motion.button>
 
           <button onClick={resetForm} className="ar-back-btn">
             <ArrowLeft size={14} strokeWidth={2} />

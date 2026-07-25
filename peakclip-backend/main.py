@@ -580,6 +580,74 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ
     except Exception as e:
         print(f"SQL MIGRATION credit_transactions constraint error: {e}")
 
+    # Add hook_score / mood / reason columns to clips table
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            headers = {
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json",
+            }
+            alter_clips_sql = "ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS hook_score INTEGER; ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS mood TEXT; ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS reason TEXT; ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS engagement_factors JSONB; ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS retention_prediction INTEGER;"
+            for url in [
+                f"https://{project_ref}.supabase.co/sql/v1/query",
+                f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+            ]:
+                try:
+                    res = await client.post(url, json={"query": alter_clips_sql}, headers=headers)
+                    if res.status_code == 200:
+                        print("SQL MIGRATION: added hook_score/mood/reason columns (OK)")
+                        try:
+                            await client.post(url, json={"query": "NOTIFY pgrst, 'reload schema'"}, headers=headers)
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"SQL MIGRATION hook_score/mood/reason error: {e}")
+
+    # Create rankings table if it doesn't exist
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            headers = {
+                "apikey": service_key,
+                "Authorization": f"Bearer {service_key}",
+                "Content-Type": "application/json",
+            }
+            rankings_sql = """
+CREATE TABLE IF NOT EXISTS public.rankings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  topic TEXT NOT NULL,
+  count INTEGER DEFAULT 5,
+  video_length INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'processing',
+  results JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
+CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
+"""
+            for url in [
+                f"https://{project_ref}.supabase.co/sql/v1/query",
+                f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+            ]:
+                try:
+                    res = await client.post(url, json={"query": rankings_sql}, headers=headers)
+                    if res.status_code == 200:
+                        print("SQL MIGRATION: rankings table created (OK)")
+                        try:
+                            await client.post(url, json={"query": "NOTIFY pgrst, 'reload schema'"}, headers=headers)
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"SQL MIGRATION rankings table error: {e}")
+
     # Ensure 'clips' storage bucket exists and is private
     try:
         async with httpx.AsyncClient(timeout=30) as client:
@@ -2054,11 +2122,13 @@ RULES:
 - Distribute clips across the video timeline — don't cluster them together.
 - Classify mood as: epic, hype, chill, funny, emotional, suspense.
 - Include a hook_score from 1-10 ranking virality potential.
+- Include engagement_factors: an array of strings identifying what makes it viral (e.g. "strong_hook", "emotional_peak", "surprise", "humor", "controversy", "high_energy", "relatable", "shock_value").
+- Include retention_prediction: estimated percentage of viewers who'd watch the full clip (1-100).
 
 Return JSON with this exact format:
 {{"clips": [
-  {{"start": 10.5, "end": 40.2, "title": "Clip title", "reason": "Why viral", "mood": "hype", "hook_score": 9}},
-  {{"start": 120.0, "end": 150.5, "title": "Clip title 2", "reason": "Why viral", "mood": "funny", "hook_score": 8}}
+  {{"start": 10.5, "end": 40.2, "title": "Clip title", "reason": "Why viral", "mood": "hype", "hook_score": 9, "engagement_factors": ["strong_hook", "emotional_peak"], "retention_prediction": 82}},
+  {{"start": 120.0, "end": 150.5, "title": "Clip title 2", "reason": "Why viral", "mood": "funny", "hook_score": 8, "engagement_factors": ["humor", "relatable"], "retention_prediction": 75}}
 ]}}"""
         }]
         response = None
@@ -2118,7 +2188,8 @@ Return JSON with this exact format:
                 clips_data["clips"].append({
                     "start": pad_start, "end": pad_end,
                     "title": f"Highlight {j+1}", "reason": "Auto-selected highlight",
-                    "mood": "chill", "hook_score": 5
+                    "mood": "chill", "hook_score": 5,
+                    "engagement_factors": ["auto_selected"], "retention_prediction": 50
                 })
 
         output_clips = []
@@ -2292,6 +2363,11 @@ Return JSON with this exact format:
                     "duration": round(duration, 1),
                     "start_time": clip_start,
                     "end_time": clip["end"],
+                    "hook_score": clip.get("hook_score"),
+                    "mood": clip.get("mood"),
+                    "reason": clip.get("reason"),
+                    "engagement_factors": clip.get("engagement_factors"),
+                    "retention_prediction": clip.get("retention_prediction"),
                     "youtube_video_id": yt_meta["youtube_video_id"] if yt_meta else None,
                     "youtube_thumbnail": yt_meta["youtube_thumbnail"] if yt_meta else None,
                     "youtube_title": yt_meta["youtube_title"] if yt_meta else None,
@@ -2302,10 +2378,10 @@ Return JSON with this exact format:
                     supabase.table("clips").insert(clip_row).execute()
                 except Exception as _db_err:
                     msg = str(_db_err)
-                    if "words_json" in msg or "Could not find" in msg:
-                        print(f"CLIP {i+1}: schema cache lag, inserting without words_json...")
-                        row_no_words = {k: v for k, v in clip_row.items() if k != "words_json"}
-                        supabase.table("clips").insert(row_no_words).execute()
+                    if "words_json" in msg or "Could not find" in msg or "hook_score" in msg or "mood" in msg or "reason" in msg:
+                        print(f"CLIP {i+1}: schema cache lag, inserting without new columns...")
+                        row_fallback = {k: v for k, v in clip_row.items() if k not in ("words_json", "hook_score", "mood", "reason", "engagement_factors", "retention_prediction")}
+                        supabase.table("clips").insert(row_fallback).execute()
                         print(f"CLIP {i+1}: inserted (frontend will load from subtitles_srt fallback)")
                     else:
                         raise
@@ -2891,11 +2967,13 @@ RULES:
 - Distribute clips across the video timeline — don't cluster them together.
 - Classify mood as: epic, hype, chill, funny, emotional, suspense.
 - Include a hook_score from 1-10 ranking virality potential.
+- Include engagement_factors: an array of strings identifying what makes it viral (e.g. "strong_hook", "emotional_peak", "surprise", "humor", "controversy", "high_energy", "relatable", "shock_value").
+- Include retention_prediction: estimated percentage of viewers who'd watch the full clip (1-100).
 
 Return JSON with this exact format:
 {{"clips": [
-  {{"start": 10.5, "end": 40.2, "title": "Clip title", "reason": "Why viral", "mood": "hype", "hook_score": 9}},
-  {{"start": 120.0, "end": 150.5, "title": "Clip title 2", "reason": "Why viral", "mood": "funny", "hook_score": 8}}
+  {{"start": 10.5, "end": 40.2, "title": "Clip title", "reason": "Why viral", "mood": "hype", "hook_score": 9, "engagement_factors": ["strong_hook", "emotional_peak"], "retention_prediction": 82}},
+  {{"start": 120.0, "end": 150.5, "title": "Clip title 2", "reason": "Why viral", "mood": "funny", "hook_score": 8, "engagement_factors": ["humor", "relatable"], "retention_prediction": 75}}
 ]}}"""
     }]
     try:
@@ -2950,7 +3028,8 @@ Return JSON with this exact format:
             clips_data["clips"].append({
                 "start": pad_start, "end": pad_end,
                 "title": f"Highlight {j+1}", "reason": "Auto-selected highlight",
-                "mood": "chill", "hook_score": 5
+                "mood": "chill", "hook_score": 5,
+                "engagement_factors": ["auto_selected"], "retention_prediction": 50
             })
 
     output_clips = []
@@ -3064,6 +3143,11 @@ Return JSON with this exact format:
                 "duration": round(duration, 1),
                 "start_time": clip_start,
                 "end_time": clip["end"],
+                "hook_score": clip.get("hook_score"),
+                "mood": clip.get("mood"),
+                "reason": clip.get("reason"),
+                "engagement_factors": clip.get("engagement_factors"),
+                "retention_prediction": clip.get("retention_prediction"),
                 "youtube_video_id": yt_meta["youtube_video_id"] if yt_meta else None,
                 "youtube_thumbnail": yt_meta["youtube_thumbnail"] if yt_meta else None,
                 "youtube_title": yt_meta["youtube_title"] if yt_meta else None,
@@ -3074,10 +3158,10 @@ Return JSON with this exact format:
                 supabase.table("clips").insert(clip_row).execute()
             except Exception as _db_err:
                 msg = str(_db_err)
-                if "words_json" in msg or "Could not find" in msg:
-                    print(f"CLIP {i+1}: schema cache lag, inserting without words_json...")
-                    row_no_words = {k: v for k, v in clip_row.items() if k != "words_json"}
-                    supabase.table("clips").insert(row_no_words).execute()
+                if "words_json" in msg or "Could not find" in msg or "hook_score" in msg or "mood" in msg or "reason" in msg:
+                    print(f"CLIP {i+1}: schema cache lag, inserting without new columns...")
+                    row_fallback = {k: v for k, v in clip_row.items() if k not in ("words_json", "hook_score", "mood", "reason", "engagement_factors", "retention_prediction")}
+                    supabase.table("clips").insert(row_fallback).execute()
                     print(f"CLIP {i+1}: inserted (frontend will load from subtitles_srt fallback)")
                 else:
                     raise
@@ -3121,6 +3205,312 @@ Return JSON with this exact format:
         "clips": output_clips,
         "total": len(output_clips)
     }
+
+
+# ── AI RANKING: search YouTube, analyze viral moments, rank across videos ──
+
+class RankingRequest(BaseModel):
+    topic: str
+    count: int = 5
+    video_length: int = 30
+    language: str = "English"
+
+
+ranking_jobs: dict = {}
+
+
+@app.post("/api/ranking")
+async def start_ranking(req: RankingRequest, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+    await check_rate_limit(f"ranking:{user['sub']}")
+    user_id = user["sub"]
+
+    user_result = supabase.table("users").select("credits,plan").eq("id", user_id).execute()
+    if not user_result.data:
+        supabase.table("users").insert({"id": user_id, "credits": 3, "plan": "free"}).execute()
+        supabase.table("credit_transactions").insert({"user_id": user_id, "amount": 3, "type": "free_grant"}).execute()
+        user_data = {"plan": "free", "credits": 3}
+    else:
+        user_data = user_result.data[0]
+        if user_data["plan"] != "pro" and user_data["credits"] <= 0:
+            tx_result = supabase.table("credit_transactions").select("id").eq("user_id", user_id).eq("type", "free_grant").limit(1).execute()
+            if not tx_result.data:
+                supabase.table("users").update({"credits": 3}).eq("id", user_id).execute()
+                supabase.table("credit_transactions").insert({"user_id": user_id, "amount": 3, "type": "free_grant"}).execute()
+                user_data["credits"] = 3
+            else:
+                raise HTTPException(status_code=402, detail="No credits remaining")
+
+    ranking_id = str(uuid.uuid4())
+    ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 0, "results": None}
+
+    supabase.table("rankings").insert({
+        "id": ranking_id,
+        "user_id": user_id,
+        "topic": req.topic,
+        "count": req.count,
+        "video_length": req.video_length,
+        "status": "processing",
+    }).execute()
+
+    background_tasks.add_task(run_ranking_background, ranking_id, user_id, req.topic, req.count, req.video_length, req.language)
+    return {"ranking_id": ranking_id, "status": "processing"}
+
+
+@app.get("/api/ranking/{ranking_id}")
+async def get_ranking(ranking_id: str, user: dict = Depends(get_current_user)):
+    job = ranking_jobs.get(ranking_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Ranking not found")
+    if job.get("user_id") != user["sub"]:
+        raise HTTPException(status_code=403, detail="Not your ranking")
+    return job
+
+
+def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int, video_length: int, language: str):
+    search_count = min(count * 4, 20)
+    candidate_videos = []
+    all_moments = []
+    local_files = []
+
+    try:
+        # ── STEP 1: Search YouTube ──
+        ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{topic}'...", "results": None}
+        print(f"RANKING {ranking_id}: searching YouTube for '{topic}' ({search_count} results)")
+
+        proxy_url = os.environ.get('YOUTUBE_PROXY')
+        has_cookies = os.path.exists(COOKIES_PATH)
+
+        search_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': True,
+            'noplaylist': True,
+            'default_search': 'ytsearch',
+            'socket_timeout': 30,
+            'geo_bypass': True,
+            'no_check_certificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            },
+        }
+        if proxy_url:
+            search_opts['proxy'] = proxy_url
+        if has_cookies:
+            search_opts['cookiefile'] = COOKIES_PATH
+
+        search_url = f"ytsearch{search_count}:{topic}"
+        ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
+        sub_opts = dict(search_opts)
+        sub_opts['url'] = search_url
+        try:
+            result = subprocess.run(
+                [sys.executable, ytdlp_script, json.dumps(sub_opts)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                entries = json.loads(result.stdout.strip())
+                if isinstance(entries, list):
+                    candidate_videos = [e for e in entries if e.get('url') or e.get('id')]
+                    print(f"RANKING {ranking_id}: found {len(candidate_videos)} videos")
+        except Exception as e:
+            print(f"RANKING {ranking_id}: search failed: {e}")
+
+        if not candidate_videos:
+            ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": "No videos found for this topic"}
+            supabase.table("rankings").update({"status": "error", "error": "No videos found"}).eq("id", ranking_id).execute()
+            return
+
+        # ── STEP 2: Download + Transcribe + Analyze each video ──
+        for vi, entry in enumerate(candidate_videos):
+            if len(all_moments) >= count * 3:
+                break
+
+            video_url = entry.get('url') or f"https://www.youtube.com/watch?v={entry.get('id', '')}"
+            video_title = entry.get('title', f'Video {vi+1}')
+            video_id = entry.get('id', '')
+            progress = 10 + int(60 * vi / len(candidate_videos))
+            ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "analyzing", "progress": progress, "message": f"Analyzing video {vi+1}/{min(len(candidate_videos), count*4)}: {video_title[:50]}...", "results": None}
+
+            try:
+                video_path = f"downloads/ranking_{ranking_id}_{vi}.mp4"
+                audio_path = f"downloads/ranking_{ranking_id}_{vi}.mp3"
+                local_files.extend([video_path, audio_path])
+
+                # Download with best available strategy
+                dl_opts = {
+                    'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
+                    'outtmpl': video_path,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'noplaylist': True,
+                    'socket_timeout': 45,
+                    'geo_bypass': True,
+                    'no_check_certificate': True,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+                    },
+                }
+                if proxy_url:
+                    dl_opts['proxy'] = proxy_url
+                if has_cookies:
+                    dl_opts['cookiefile'] = COOKIES_PATH
+                dl_opts['extractor_args'] = {'youtube': {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True}}
+                if BGUTIL_POT_AVAILABLE:
+                    dl_opts['extractor_args']['youtubepot-bgutilhttp'] = {}
+
+                dl_sub_opts = dict(dl_opts)
+                dl_sub_opts['url'] = video_url
+                dl_result = subprocess.run(
+                    [sys.executable, ytdlp_script, json.dumps(dl_sub_opts)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if dl_result.returncode != 0 or not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+                    print(f"RANKING {ranking_id}: video {vi+1} download failed, skipping")
+                    continue
+
+                # Extract audio
+                subprocess.run([
+                    'ffmpeg', '-y', '-i', video_path,
+                    '-vn', '-ar', '16000', '-ac', '1', '-b:a', '32k', audio_path
+                ], capture_output=True, timeout=120)
+
+                if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 1024:
+                    print(f"RANKING {ranking_id}: video {vi+1} audio extraction failed, skipping")
+                    continue
+
+                # Transcribe
+                transcript = None
+                try:
+                    with open(audio_path, 'rb') as f:
+                        transcript = client.audio.transcriptions.create(
+                            model="whisper-1", file=f,
+                            response_format="verbose_json",
+                            timestamp_granularities=["word", "segment"],
+                        )
+                except Exception as e:
+                    print(f"RANKING {ranking_id}: video {vi+1} OpenAI transcription failed: {e}")
+                    if groq_client:
+                        try:
+                            with open(audio_path, 'rb') as f:
+                                transcript = groq_client.audio.transcriptions.create(
+                                    model="whisper-large-v3-turbo", file=f,
+                                    response_format="verbose_json",
+                                    timestamp_granularities=["word", "segment"],
+                                )
+                        except Exception as ge:
+                            print(f"RANKING {ranking_id}: video {vi+1} Groq transcription also failed: {ge}")
+
+                if not transcript or not hasattr(transcript, 'segments') or not transcript.segments:
+                    print(f"RANKING {ranking_id}: video {vi+1} no transcript, skipping")
+                    continue
+
+                segments_text = "\n".join([
+                    f"[{s.start:.1f}s - {s.end:.1f}s]: {s.text}"
+                    for s in transcript.segments
+                ])
+                analysis_transcript = compact_analysis_transcript(segments_text)
+
+                # AI analysis
+                analysis_body = [{
+                    "role": "system",
+                    "content": "You are a viral clip analyzer. Return ONLY valid JSON, no markdown, no code fences.",
+                }, {
+                    "role": "user",
+                    "content": f"""Analyze this transcript and return the 2 best viral moments for YouTube Shorts/TikTok.
+
+Transcript:
+ {analysis_transcript}
+
+RULES:
+- Return exactly 2 clips.
+- Each clip should be at least 10 seconds long.
+- Prioritize: strong hooks, emotional peaks, surprising twists, humor, high-energy moments, or controversy.
+- Classify mood as: epic, hype, chill, funny, emotional, suspense.
+- Include a hook_score from 1-10 ranking virality potential.
+- Include engagement_factors: array of strings (e.g. "strong_hook", "emotional_peak", "surprise", "humor", "controversy", "high_energy", "relatable", "shock_value").
+- Include retention_prediction: estimated % of viewers who'd watch the full clip (1-100).
+
+Return JSON: {{"clips": [
+  {{"start": 10.5, "end": 40.2, "title": "Clip title", "reason": "Why viral", "mood": "hype", "hook_score": 9, "engagement_factors": ["strong_hook"], "retention_prediction": 82}}
+]}}"""
+                }]
+
+                ai_response = None
+                try:
+                    ai_response = client.chat.completions.create(
+                        model="gpt-4o", response_format={"type": "json_object"},
+                        timeout=90, messages=analysis_body,
+                    )
+                except Exception as e:
+                    if groq_client:
+                        try:
+                            ai_response = groq_client.chat.completions.create(
+                                model="llama-3.3-70b-versatile",
+                                response_format={"type": "json_object"},
+                                timeout=60, messages=analysis_body,
+                            )
+                        except Exception:
+                            pass
+
+                if ai_response and ai_response.choices:
+                    raw = ai_response.choices[0].message.content.strip()
+                    if raw.startswith("```"):
+                        raw = raw.split("\n", 1)[-1].rsplit("\n", 1)[0]
+                        if raw.endswith("```"):
+                            raw = raw[:-3]
+                    try:
+                        clips_data = json.loads(raw)
+                        for c in clips_data.get("clips", []):
+                            all_moments.append({
+                                "video_url": video_url,
+                                "video_id": video_id,
+                                "video_title": video_title,
+                                "video_thumbnail": f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg" if video_id else "",
+                                "start": c.get("start", 0),
+                                "end": c.get("end", 0),
+                                "title": c.get("title", ""),
+                                "reason": c.get("reason", ""),
+                                "mood": c.get("mood", "chill"),
+                                "hook_score": c.get("hook_score", 5),
+                                "engagement_factors": c.get("engagement_factors", []),
+                                "retention_prediction": c.get("retention_prediction", 50),
+                            })
+                    except json.JSONDecodeError:
+                        pass
+
+            except Exception as e:
+                print(f"RANKING {ranking_id}: video {vi+1} error: {e}")
+                continue
+
+        # ── STEP 3: Rank all moments ──
+        ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "ranking", "progress": 85, "message": "Ranking viral moments across all videos...", "results": None}
+
+        all_moments.sort(key=lambda m: (m.get("hook_score", 5) * 10 + m.get("retention_prediction", 50) / 10), reverse=True)
+        top_moments = all_moments[:count]
+
+        for rank, moment in enumerate(top_moments):
+            moment["rank"] = rank + 1
+
+        ranking_jobs[ranking_id] = {"status": "done", "user_id": user_id, "step": "done", "progress": 100, "results": top_moments, "total_analyzed": len(candidate_videos), "total_moments": len(all_moments)}
+
+        supabase.table("rankings").update({
+            "status": "done",
+            "results": json.dumps(top_moments),
+        }).eq("id", ranking_id).execute()
+
+        print(f"RANKING {ranking_id}: done — {len(top_moments)} ranked moments from {len(candidate_videos)} videos, {len(all_moments)} total moments")
+
+    except Exception as e:
+        print(f"RANKING {ranking_id}: fatal error: {e}")
+        traceback.print_exc()
+        ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": str(e)[:200]}
+        supabase.table("rankings").update({"status": "error", "error": str(e)[:200]}).eq("id", ranking_id).execute()
+    finally:
+        for f in local_files:
+            try:
+                os.unlink(f)
+            except OSError:
+                pass
 
 
 @app.get("/admin/oauth-status")

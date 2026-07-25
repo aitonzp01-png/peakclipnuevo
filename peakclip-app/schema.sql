@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS public.clips (
   youtube_title TEXT,
   youtube_channel TEXT,
   youtube_duration NUMERIC,
+  hook_score INTEGER,
+  mood TEXT,
+  reason TEXT,
+  engagement_factors JSONB,
+  retention_prediction INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -70,6 +75,13 @@ ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS subtitles_srt TEXT;
 ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS words_json JSONB;
 ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS subtitle_style JSONB;
 ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS brand_settings JSONB;
+
+-- Add viral scoring columns
+ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS hook_score INTEGER;
+ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS mood TEXT;
+ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS engagement_factors JSONB;
+ALTER TABLE public.clips ADD COLUMN IF NOT EXISTS retention_prediction INTEGER;
 
 -- Index for fast user-scoped queries
 CREATE INDEX IF NOT EXISTS idx_clips_user_id ON public.clips(user_id);
@@ -99,6 +111,7 @@ CREATE TRIGGER on_auth_user_created
 ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.clips ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.credit_transactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.rankings ENABLE ROW LEVEL SECURITY;
 
 -- RLS: users can read their own row, update only safe fields
 DROP POLICY IF EXISTS user_read_own ON public.users;
@@ -132,6 +145,19 @@ CREATE POLICY clips_update_own ON public.clips
 DROP POLICY IF EXISTS clips_delete_own ON public.clips;
 CREATE POLICY clips_delete_own ON public.clips
   FOR DELETE USING (auth.uid() = user_id);
+
+-- RLS: rankings are scoped to the owning user
+DROP POLICY IF EXISTS rankings_select_own ON public.rankings;
+CREATE POLICY rankings_select_own ON public.rankings
+  FOR SELECT USING (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS rankings_insert_own ON public.rankings;
+CREATE POLICY rankings_insert_own ON public.rankings
+  FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+DROP POLICY IF EXISTS rankings_update_own ON public.rankings;
+CREATE POLICY rankings_update_own ON public.rankings
+  FOR UPDATE USING (auth.uid() = user_id);
 
 -- Storage RLS: clips bucket — owner-only access via object path prefix
 DROP POLICY IF EXISTS "Users can read their own clips" ON storage.objects;

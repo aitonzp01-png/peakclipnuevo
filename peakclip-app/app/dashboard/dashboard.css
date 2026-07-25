@@ -2017,6 +2017,48 @@ body {
   color: var(--db-text-secondary);
 }
 
+.ar-result-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ar-result-source {
+  font-size: 11px;
+  color: var(--db-text-dim, var(--db-placeholder));
+  display: block;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ar-result-mood {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--db-brand, #c4ff3d);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-left: 6px;
+}
+
+.ar-result-tags {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.ar-result-tag {
+  font-size: 9px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--db-hover);
+  color: var(--db-text-secondary);
+  text-transform: capitalize;
+}
+
 .ar-result-preview-btn {
   display: flex;
   align-items: center;
