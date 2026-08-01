@@ -1633,6 +1633,259 @@ async def download_with_playwright(url: str, output_path: str) -> bool:
     return False
 
 
+def download_youtube_video_robust(url: str, output_path: str, label: str = "", progress_cb=None) -> tuple[bool, str]:
+    """Download a YouTube video using the full robust strategy chain.
+
+    Used ONLY by the AI Ranking pipeline (does not affect the normal clip flow).
+    Order: cobalt.tools -> 16 yt-dlp strategies (proxy/cookies/POT + bot-detection
+    handling) -> public fallbacks (invidious, piped, real-debrid, alldebrid, playwright).
+    Returns (success, error_message).
+    """
+
+    def _progress(msg):
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
+    deadline = time.time() + 600
+
+    def check_deadline(label_=""):
+        if time.time() > deadline:
+            raise TimeoutError(f"Download deadline exceeded ({label_})")
+
+    # ── PHASE 0: Try cobalt.tools first (fastest, uses their servers) ──
+    _progress("Trying cobalt.tools...")
+    print(f"{label}trying cobalt.tools first")
+    last_err = None
+    try:
+        if download_with_cobalt(url, output_path):
+            print(f"{label}cobalt download succeeded")
+            return True, ""
+    except Exception as e:
+        print(f"{label}cobalt attempt failed: {e}")
+        last_err = e
+
+    # Strategies ordered by success rate from Railway behind Oxylabs proxy.
+    # The android+skip combo is the only one that succeeded (360p).
+    strategies = [
+        {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
+        {'player_client': ['android_vr'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['ios'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['android'], 'player_skip': ['webpage']},
+        {'player_client': ['android']},
+        {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['web_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['mweb'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['web_creator'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {},
+        {'player_client': ['web']},
+        {'player_client': ['ios']},
+        {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs']},
+        {'player_client': ['web_embedded']},
+        {'player_client': ['web'], 'include_incomplete_formats': True},
+    ]
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0',
+        'Mozilla/5.0 (Linux; Android 15; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+        'Mozilla/5.0 (SMART-TV; Linux; Tizen 8.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/128.0.0.0 TV Safari/537.36',
+    ]
+    format_fallbacks = [
+        # Best possible with DASH (separate video+audio)
+        'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio',
+        # 1080p DASH
+        'bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio',
+        # Any DASH with audio
+        'bestvideo+bestaudio',
+        # 4K progressive (combined)
+        'best[height<=2160][ext=mp4]/best[height<=2160]',
+        # 1080p progressive
+        'best[height<=1080][ext=mp4]/best[height<=1080]',
+        # 720p progressive (minimum acceptable)
+        'best[height<=720][ext=mp4]/best[height<=720]',
+        # H.264 + AAC (safest codec combo)
+        'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]',
+    ]
+    impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
+
+    # Auth: residential proxy + POT server + extractor strategies
+    proxy_url = os.environ.get('YOUTUBE_PROXY')
+    po_token = os.environ.get('YOUTUBE_PO_TOKEN')
+    visitor_data = os.environ.get('YOUTUBE_VISITOR_DATA')
+    has_cookies = os.path.exists(COOKIES_PATH)
+
+    max_attempts = 16
+    proxy_disabled = False
+    bot_detection_count = 0
+    # Skip yt-dlp loop if cobalt already downloaded successfully
+    cobalt_ok = os.path.exists(output_path) and os.path.getsize(output_path) > 1024
+    if cobalt_ok:
+        print(f"{label}video already downloaded by cobalt, skipping yt-dlp")
+    for attempt in range(max_attempts if not cobalt_ok else 0):
+        check_deadline("yt-dlp")
+        cfg = strategies[attempt % len(strategies)]
+        _progress(f"Downloading video (attempt {attempt+1}/{max_attempts})...")
+        ua = user_agents[attempt % len(user_agents)]
+        fmt = format_fallbacks[attempt % len(format_fallbacks)]
+        imp = impersonate_profiles[attempt % len(impersonate_profiles)]
+        try:
+            # Clean partial file from previous timed-out attempt
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+            ydl_opts = {
+                'format': fmt,
+                'outtmpl': output_path,
+                'quiet': True,
+                'verbose': True if attempt == 0 else False,
+                'no_warnings': True,
+                'extract_flat': False,
+                'noplaylist': True,
+                'sleep_interval': 1,
+                'sleep_interval_requests': 1,
+                'extractor_retries': 3,
+                'file_access_retries': 3,
+                'ignore_no_formats_error': True,
+                'allow_unplayable_formats': True,
+                'no_check_certificate': True,
+                'socket_timeout': 60,
+                'overwrites': True,
+                'http_headers': {
+                    'User-Agent': ua,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                },
+                'youtube_include_dash_manifest': True,
+                'youtube_include_hls_manifest': True,
+                'source_address': '0.0.0.0',
+                'legacy_server_connect': True,
+                'geo_bypass': True,
+            }
+            if imp:
+                ydl_opts['impersonate'] = imp
+            use_proxy = proxy_url and not proxy_disabled
+            if use_proxy:
+                ydl_opts['proxy'] = proxy_url
+            # Always use cookies from attempt 0 — proxy-only never works from Railway
+            if has_cookies:
+                ydl_opts['cookiefile'] = COOKIES_PATH
+            extractor_args = {'youtube': cfg} if cfg else {'youtube': {}}
+            # Always enable PO token and bgutil as fallback
+            if po_token:
+                extractor_args['youtube']['po_token'] = po_token
+            if visitor_data:
+                extractor_args['youtube']['visitor_data'] = visitor_data
+            if BGUTIL_POT_AVAILABLE:
+                extractor_args['youtubepot-bgutilhttp'] = {}
+            if extractor_args['youtube'] or 'youtubepot-bgutilhttp' in extractor_args:
+                ydl_opts['extractor_args'] = extractor_args
+            print(f"{label}yt-dlp attempt {attempt+1}/{max_attempts} strategy={cfg} format={fmt} imp={imp} proxy={'yes' if use_proxy else 'no'} cookies={'yes' if has_cookies else 'no'}")
+            # Run yt-dlp in a subprocess so we can hard-kill it on timeout
+            ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
+            sub_opts = dict(ydl_opts)
+            sub_opts['url'] = url
+            try:
+                sub_timeout = 45 if attempt < 4 else 90 if attempt < 8 else 180
+                result = subprocess.run(
+                    [sys.executable, ytdlp_script, json.dumps(sub_opts)],
+                    capture_output=True,
+                    text=True,
+                    timeout=sub_timeout,
+                )
+                if result.returncode != 0:
+                    stderr_tail = (result.stderr or '')[-1000:]
+                    stdout_tail = (result.stdout or '')[-500:]
+                    combined_output = (stderr_tail + stdout_tail).lower()
+                    print(f"{label}yt-dlp attempt {attempt+1} exit={result.returncode}")
+                    if stderr_tail:
+                        print(f"{label}  stderr[-1000]: {stderr_tail}")
+                    if stdout_tail:
+                        print(f"{label}  stdout[-500]: {stdout_tail}")
+                    # Detect YouTube bot detection specifically
+                    if any(x in combined_output for x in ['sign in to confirm', 'not a bot', 'no video formats found', 'confirm you']):
+                        bot_detection_count += 1
+                        print(f"{label}  >>> YOUTUBE BOT DETECTION detected ({bot_detection_count} times). "
+                              f"Authentication needed for high-quality downloads.")
+                        if bot_detection_count >= 2:
+                            print(f"{label}  >>> PERSISTENT BOT DETECTION — YouTube is actively blocking this IP.")
+                            print(f"{label}  >>> Configure YOUTUBE_OAUTH_TOKENS_B64, YOUTUBE_COOKIES_B64, or YOUTUBE_PROXY to fix.")
+                    raise Exception(f"yt-dlp exited {result.returncode}: {stderr_tail[:200]}")
+            except subprocess.TimeoutExpired as e:
+                stderr_tail = (e.stderr or '')[-300:] if hasattr(e, 'stderr') else ''
+                print(f"{label}yt-dlp attempt {attempt+1} timed out. stderr: {stderr_tail}")
+                raise TimeoutError(f"Download attempt {attempt+1} timed out")
+            if not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+                if os.path.exists(output_path):
+                    with open(output_path, 'rb') as _f:
+                        _head = _f.read(500)
+                    print(f"{label}yt-dlp output too small ({os.path.getsize(output_path)} bytes): {_head[:200]}")
+                raise Exception("File not downloaded or too small")
+            last_err = None
+            break
+        except TimeoutError:
+            last_err = TimeoutError(f"Download attempt {attempt+1} timed out")
+            print(f"{label}download attempt {attempt+1}/{max_attempts} timed out")
+            if attempt < max_attempts - 1:
+                time.sleep(min(2 + attempt, 10))
+        except Exception as e:
+            last_err = e
+            err_lower = str(e).lower()
+            # If proxy fails (auth, DNS, tunnel), disable it and retry without proxy
+            if any(x in err_lower for x in ["407", "proxy authentication", "name or service not known", "tunnel connection failed", "unable to connect to proxy"]):
+                if proxy_url and not proxy_disabled:
+                    print(f"{label}proxy failed ({err_lower[:80]}). Disabling proxy for remaining attempts.")
+                    proxy_disabled = True
+                    if attempt < max_attempts - 1:
+                        time.sleep(2)
+                        continue
+            if any(x in err_lower for x in ["rate-limited", "no video formats", "format not available", "requested format"]):
+                # These are YouTube-side blocks, NOT proxy failures.
+                # Keep proxy enabled — disabling it would make things worse.
+                if attempt < max_attempts - 1:
+                    wait = min(3 + attempt, 15)
+                    print(f"{label}YouTube issue (attempt {attempt+1}/{max_attempts}): {err_lower[:80]}, waiting {wait}s...")
+                    time.sleep(wait)
+                    continue
+
+    # If yt-dlp completely failed, try public fallback services
+    if last_err is not None or not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+        check_deadline("fallbacks")
+        _progress("Trying alternative download methods...")
+        print(f"{label}starting fallback downloaders")
+        fallback_success = False
+        for name, fn in [
+            ("invidious", lambda: download_with_invidious(url, output_path)),
+            ("piped", lambda: download_with_piped(url, output_path)),
+            ("real-debrid", lambda: download_with_realdebrid(url, output_path)),
+            ("alldebrid", lambda: download_with_alldebrid(url, output_path)),
+            ("cobalt", lambda: download_with_cobalt(url, output_path)),
+            ("playwright", lambda: run_async_in_sync(download_with_playwright(url, output_path), timeout=30)),
+        ]:
+            try:
+                print(f"{label}trying fallback {name}")
+                if fn():
+                    fallback_success = True
+                    print(f"{label}fallback {name} succeeded")
+                    break
+            except Exception as e:
+                print(f"{label}fallback {name} error: {e}")
+        if not fallback_success or not os.path.exists(output_path) or os.path.getsize(output_path) < 1024:
+            msg = str(last_err)[:200] if last_err else "unknown"
+            print(f"{label}all download methods failed: {msg}")
+            return False, f"Download failed after all attempts: {msg}"
+
+    return True, ""
+
+
 # ──────────────────────────────────────────────────────────────
 
 
@@ -3367,22 +3620,32 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
         if has_cookies:
             search_opts['cookiefile'] = COOKIES_PATH
 
-        search_url = f"ytsearch{search_count}:{topic}"
-        ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
-        sub_opts = dict(search_opts)
-        sub_opts['url'] = search_url
-        try:
-            result = subprocess.run(
-                [sys.executable, ytdlp_script, json.dumps(sub_opts)],
-                capture_output=True, text=True, timeout=60,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                entries = json.loads(result.stdout.strip())
-                if isinstance(entries, list):
-                    candidate_videos = [e for e in entries if e.get('url') or e.get('id')]
-                    print(f"RANKING {ranking_id}: found {len(candidate_videos)} videos")
-        except Exception as e:
-            print(f"RANKING {ranking_id}: search failed: {e}")
+        # Multi-round search: yt-dlp in-process (extract_info returns entries directly).
+        seen_ids = set()
+        candidate_videos = []
+        search_rounds = [topic, f"{topic} best moments", f"{topic} viral"]
+        for round_idx, round_query in enumerate(search_rounds):
+            ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{round_query}'...", "results": None}
+            try:
+                with yt_dlp.YoutubeDL(search_opts) as ydl:
+                    info = ydl.extract_info(f"ytsearch{search_count}:{round_query}", download=False)
+                entries = (info or {}).get("entries") or []
+                for e in entries:
+                    vid = e.get("id")
+                    if vid and vid in seen_ids:
+                        continue
+                    if vid:
+                        seen_ids.add(vid)
+                    if e.get("url") or vid:
+                        candidate_videos.append(e)
+            except Exception as e:
+                print(f"RANKING {ranking_id}: search round {round_idx+1} failed: {e}")
+            print(f"RANKING {ranking_id}: search round {round_idx+1}: '{round_query}' — {len(candidate_videos)} candidates so far")
+            if len(candidate_videos) >= count * 4:
+                break
+
+        candidate_videos = candidate_videos[: max(search_count * 2, 35)]
+        print(f"RANKING {ranking_id}: {len(candidate_videos)} total candidate videos")
 
         if not candidate_videos:
             ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": "No videos found for this topic"}
@@ -3405,36 +3668,17 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
                 audio_path = f"downloads/ranking_{ranking_id}_{vi}.mp3"
                 local_files.extend([video_path, audio_path])
 
-                # Download with best available strategy
-                dl_opts = {
-                    'format': 'best[height<=720][ext=mp4]/best[height<=720]/best',
-                    'outtmpl': video_path,
-                    'quiet': True,
-                    'no_warnings': True,
-                    'noplaylist': True,
-                    'socket_timeout': 45,
-                    'geo_bypass': True,
-                    'no_check_certificate': True,
-                    'http_headers': {
-                        'User-Agent': 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
-                    },
-                }
-                if proxy_url:
-                    dl_opts['proxy'] = proxy_url
-                if has_cookies:
-                    dl_opts['cookiefile'] = COOKIES_PATH
-                dl_opts['extractor_args'] = {'youtube': {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True}}
-                if BGUTIL_POT_AVAILABLE:
-                    dl_opts['extractor_args']['youtubepot-bgutilhttp'] = {}
+                # Download with the robust strategy chain (cobalt -> 16 yt-dlp strategies -> fallbacks)
+                def _dl_progress(msg):
+                    ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "analyzing", "progress": progress, "message": f"Video {vi+1}/{min(len(candidate_videos), count*4)}: {msg}", "results": None}
 
-                dl_sub_opts = dict(dl_opts)
-                dl_sub_opts['url'] = video_url
-                dl_result = subprocess.run(
-                    [sys.executable, ytdlp_script, json.dumps(dl_sub_opts)],
-                    capture_output=True, text=True, timeout=120,
+                dl_ok, dl_err = download_youtube_video_robust(
+                    video_url, video_path,
+                    label=f"RANKING {ranking_id}: ",
+                    progress_cb=_dl_progress,
                 )
-                if dl_result.returncode != 0 or not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
-                    print(f"RANKING {ranking_id}: video {vi+1} download failed, skipping")
+                if not dl_ok or not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+                    print(f"RANKING {ranking_id}: video {vi+1} download failed: {dl_err}")
                     continue
 
                 # Extract audio
@@ -3447,27 +3691,28 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
                     print(f"RANKING {ranking_id}: video {vi+1} audio extraction failed, skipping")
                     continue
 
-                # Transcribe
+                # Transcribe (Groq first — OpenAI currently has no credits)
                 transcript = None
-                try:
-                    with open(audio_path, 'rb') as f:
-                        transcript = client.audio.transcriptions.create(
-                            model="whisper-1", file=f,
-                            response_format="verbose_json",
-                            timestamp_granularities=["word", "segment"],
-                        )
-                except Exception as e:
-                    print(f"RANKING {ranking_id}: video {vi+1} OpenAI transcription failed: {e}")
-                    if groq_client:
-                        try:
-                            with open(audio_path, 'rb') as f:
-                                transcript = groq_client.audio.transcriptions.create(
-                                    model="whisper-large-v3-turbo", file=f,
-                                    response_format="verbose_json",
-                                    timestamp_granularities=["word", "segment"],
-                                )
-                        except Exception as ge:
-                            print(f"RANKING {ranking_id}: video {vi+1} Groq transcription also failed: {ge}")
+                if groq_client:
+                    try:
+                        with open(audio_path, 'rb') as f:
+                            transcript = groq_client.audio.transcriptions.create(
+                                model="whisper-large-v3-turbo", file=f,
+                                response_format="verbose_json",
+                                timestamp_granularities=["word", "segment"],
+                            )
+                    except Exception as ge:
+                        print(f"RANKING {ranking_id}: video {vi+1} Groq transcription failed: {ge}")
+                if transcript is None:
+                    try:
+                        with open(audio_path, 'rb') as f:
+                            transcript = client.audio.transcriptions.create(
+                                model="whisper-1", file=f,
+                                response_format="verbose_json",
+                                timestamp_granularities=["word", "segment"],
+                            )
+                    except Exception as e:
+                        print(f"RANKING {ranking_id}: video {vi+1} OpenAI transcription failed: {e}")
 
                 if not transcript or not hasattr(transcript, 'segments') or not transcript.segments:
                     print(f"RANKING {ranking_id}: video {vi+1} no transcript, skipping")
@@ -3505,21 +3750,23 @@ Return JSON: {{"clips": [
                 }]
 
                 ai_response = None
-                try:
-                    ai_response = client.chat.completions.create(
-                        model="gpt-4o", response_format={"type": "json_object"},
-                        timeout=90, messages=analysis_body,
-                    )
-                except Exception as e:
-                    if groq_client:
-                        try:
-                            ai_response = groq_client.chat.completions.create(
-                                model="llama-3.3-70b-versatile",
-                                response_format={"type": "json_object"},
-                                timeout=60, messages=analysis_body,
-                            )
-                        except Exception:
-                            pass
+                if groq_client:
+                    try:
+                        ai_response = groq_client.chat.completions.create(
+                            model="llama-3.3-70b-versatile",
+                            response_format={"type": "json_object"},
+                            timeout=60, messages=analysis_body,
+                        )
+                    except Exception:
+                        pass
+                if ai_response is None:
+                    try:
+                        ai_response = client.chat.completions.create(
+                            model="gpt-4o", response_format={"type": "json_object"},
+                            timeout=90, messages=analysis_body,
+                        )
+                    except Exception:
+                        pass
 
                 if ai_response and ai_response.choices:
                     raw = ai_response.choices[0].message.content.strip()
@@ -3559,6 +3806,15 @@ Return JSON: {{"clips": [
 
         for rank, moment in enumerate(top_moments):
             moment["rank"] = rank + 1
+
+        if not top_moments:
+            print(f"RANKING {ranking_id}: no viral moments detected")
+            ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "step": "error", "progress": 100, "message": "No viral moments could be detected. Try a different topic or try again later."}
+            try:
+                supabase.table("rankings").update({"status": "error", "error": "No viral moments detected"}).eq("id", ranking_id).execute()
+            except Exception:
+                pass
+            return
 
         ranking_jobs[ranking_id] = {"status": "done", "user_id": user_id, "step": "done", "progress": 100, "results": top_moments, "total_analyzed": len(candidate_videos), "total_moments": len(all_moments)}
 

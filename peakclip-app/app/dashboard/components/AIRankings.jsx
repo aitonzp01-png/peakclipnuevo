@@ -666,20 +666,31 @@ export default function AIRankings({ setToast }) {
           </motion.div>
 
           <div className="ar-results-list">
-            {(results || []).map((item, idx) => (
-              <ResultCard key={idx} item={item} index={idx} />
-            ))}
+            {results && results.length > 0 ? (
+              results.map((item, idx) => (
+                <ResultCard key={idx} item={item} index={idx} />
+              ))
+            ) : (
+              <div className="ar-empty-state" style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--text-muted, #8a8fa3)' }}>
+                <AlertCircle size={28} strokeWidth={1.5} style={{ margin: '0 auto 12px', display: 'block' }} />
+                <p style={{ margin: 0, fontSize: 15 }}>
+                  No viral moments were found for this topic. Try a different topic or try again later.
+                </p>
+              </div>
+            )}
           </div>
 
-          <motion.button
-            onClick={generateVideo}
-            className="db-primary-btn ar-generate-btn"
-            whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.98 }}
-          >
-            <Clapperboard size={18} strokeWidth={1.5} />
-            Generate Ranking Video
-          </motion.button>
+          {results && results.length > 0 && (
+            <motion.button
+              onClick={generateVideo}
+              className="db-primary-btn ar-generate-btn"
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+            >
+              <Clapperboard size={18} strokeWidth={1.5} />
+              Generate Ranking Video
+            </motion.button>
+          )}
 
           <button onClick={resetForm} className="ar-back-btn">
             <ArrowLeft size={14} strokeWidth={2} />
