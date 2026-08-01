@@ -33,7 +33,7 @@ import shutil
 import concurrent.futures
 import threading
 from collections import defaultdict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 import jwt as pyjwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -1845,7 +1845,9 @@ def download_youtube_video_robust(url: str, output_path: str, label: str = "", p
             }
             if imp:
                 ydl_opts['impersonate'] = imp
-            use_proxy = proxy_url and not proxy_disabled
+            # First 3 attempts use Railway's native IP (the Oxylabs proxy IP is
+            # heavily bot-flagged); then fall back to the proxy.
+            use_proxy = proxy_url and (not proxy_disabled) and attempt >= 3
             if use_proxy:
                 ydl_opts['proxy'] = proxy_url
             # Always use cookies from attempt 0 — proxy-only never works from Railway
@@ -3659,15 +3661,20 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
         if has_cookies:
             search_opts['cookiefile'] = COOKIES_PATH
 
-        # Multi-round search: yt-dlp in-process (extract_info returns entries directly).
+        # Multi-round search biased to vertical Shorts. The `sp=EgIYAQ==` filter
+        # restricts YouTube search results to the Shorts tab (vertical clips).
         seen_ids = set()
         candidate_videos = []
-        search_rounds = [topic, f"{topic} best moments", f"{topic} viral"]
+        search_rounds = [topic, f"{topic} shorts", f"{topic} #shorts", f"{topic} best moments", f"{topic} viral shorts"]
         for round_idx, round_query in enumerate(search_rounds):
             ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{round_query}'...", "results": None}
             try:
                 with yt_dlp.YoutubeDL(search_opts) as ydl:
-                    info = ydl.extract_info(f"ytsearch{search_count}:{round_query}", download=False)
+                    if round_idx < 3:
+                        search_url = f"https://www.youtube.com/results?search_query={quote(round_query)}&sp=EgIYAQ%3D%3D"
+                        info = ydl.extract_info(search_url, download=False)
+                    else:
+                        info = ydl.extract_info(f"ytsearch{search_count}:{round_query}", download=False)
                 entries = (info or {}).get("entries") or []
                 for e in entries:
                     vid = e.get("id")
@@ -3683,8 +3690,14 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
             if len(candidate_videos) >= count * 4:
                 break
 
-        candidate_videos = candidate_videos[: max(search_count * 2, 35)]
-        print(f"RANKING {ranking_id}: {len(candidate_videos)} total candidate videos")
+        # Prefer vertical Shorts (<= 60s) and rank by view count (viral first).
+        for e in candidate_videos:
+            e["_is_short"] = (e.get("duration") or 0) in range(1, 61) or (e.get("duration") or 0) <= 0
+            e["_views"] = e.get("view_count") or 0
+        shorts = sorted([e for e in candidate_videos if e["_is_short"]], key=lambda e: e["_views"], reverse=True)
+        others = sorted([e for e in candidate_videos if not e["_is_short"]], key=lambda e: e["_views"], reverse=True)
+        candidate_videos = (shorts + others)[: max(search_count * 2, 35)]
+        print(f"RANKING {ranking_id}: {len(candidate_videos)} total candidate videos ({len(shorts)} vertical Shorts)")
 
         if not candidate_videos:
             ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": "No videos found for this topic"}
@@ -3757,9 +3770,14 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
                     print(f"RANKING {ranking_id}: video {vi+1} no transcript, skipping")
                     continue
 
+                def _seg_range(s):
+                    if isinstance(s, dict):
+                        return s.get("start", 0), s.get("end", 0), s.get("text", "")
+                    return getattr(s, "start", 0), getattr(s, "end", 0), getattr(s, "text", "")
+
                 segments_text = "\n".join([
-                    f"[{s.start:.1f}s - {s.end:.1f}s]: {s.text}"
-                    for s in transcript.segments
+                    f"[{a:.1f}s - {b:.1f}s]: {t}"
+                    for a, b, t in (_seg_range(s) for s in transcript.segments)
                 ])
                 analysis_transcript = compact_analysis_transcript(segments_text)
 
