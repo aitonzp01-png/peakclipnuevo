@@ -203,6 +203,7 @@ export default function AIRankings({ setToast }) {
   const [genId, setGenId] = useState(null);
   const [genProgress, setGenProgress] = useState(0);
   const [genMessage, setGenMessage] = useState('');
+  const [videoTitle, setVideoTitle] = useState('');
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -342,6 +343,7 @@ export default function AIRankings({ setToast }) {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`,
         },
+        body: JSON.stringify({ title: videoTitle.trim() }),
       });
       if (!response.ok) {
         const err = await response.json();
@@ -354,7 +356,7 @@ export default function AIRankings({ setToast }) {
       setToast({ type: 'error', text: err.message || 'Failed to generate video' });
       setPhase('results');
     }
-  }, [rankingId, setToast]);
+  }, [rankingId, videoTitle, setToast]);
 
   // Poll generation status
   useEffect(() => {
@@ -681,15 +683,31 @@ export default function AIRankings({ setToast }) {
           </div>
 
           {results && results.length > 0 && (
-            <motion.button
-              onClick={generateVideo}
-              className="db-primary-btn ar-generate-btn"
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <Clapperboard size={18} strokeWidth={1.5} />
-              Generate Ranking Video
-            </motion.button>
+            <div className="ar-generate-block">
+              <div className="ar-field">
+                <label className="ar-field-label">Ranking Video Title</label>
+                <span className="ar-field-hint">Shown on the top black bar of every clip</span>
+                <div className="ar-input-container">
+                  <Clapperboard size={16} strokeWidth={1.5} className="ar-input-icon" />
+                  <input
+                    type="text"
+                    value={videoTitle}
+                    onChange={(e) => setVideoTitle(e.target.value)}
+                    placeholder={`Example: TOP 5 ${topic.slice(0, 30)}...`}
+                    className="ar-input"
+                  />
+                </div>
+              </div>
+              <motion.button
+                onClick={generateVideo}
+                className="db-primary-btn ar-generate-btn"
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <Clapperboard size={18} strokeWidth={1.5} />
+                Generate Ranking Video
+              </motion.button>
+            </div>
           )}
 
           <button onClick={resetForm} className="ar-back-btn">

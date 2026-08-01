@@ -3907,9 +3907,16 @@ ranking_gen_jobs: dict = {}
 
 
 @app.post("/api/ranking/{ranking_id}/generate")
-async def generate_ranking_video(ranking_id: str, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
+async def generate_ranking_video(ranking_id: str, request: Request, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
     await check_rate_limit(f"ranking-gen:{user['sub']}")
     user_id = user["sub"]
+
+    title = ""
+    try:
+        body = await request.json()
+        title = str((body or {}).get("title") or "").strip()
+    except Exception:
+        pass
 
     results = ranking_jobs.get(ranking_id, {}).get("results")
     if not results:
@@ -3926,7 +3933,7 @@ async def generate_ranking_video(ranking_id: str, background_tasks: BackgroundTa
     gen_id = str(uuid.uuid4())
     ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 0, "message": "Starting video generation...", "clip_id": None}
 
-    background_tasks.add_task(generate_ranking_video_background, gen_id, ranking_id, user_id, results)
+    background_tasks.add_task(generate_ranking_video_background, gen_id, ranking_id, user_id, results, title)
     return {"gen_id": gen_id, "status": "processing"}
 
 
@@ -3940,12 +3947,13 @@ async def get_ranking_gen_status(gen_id: str, user: dict = Depends(get_current_u
     return job
 
 
-def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str, results: list):
+def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str, results: list, title: str = ""):
     local_files = []
     temp_files = []
 
     try:
         topic = ranking_jobs.get(ranking_id, {}).get("topic", "") or "Top Ranking"
+        ranking_title = (title or topic).strip() or "Top Ranking"
         count = len(results)
         font_bold = "/usr/share/fonts/truetype/Montserrat-ExtraBold.ttf"
         font_reg = "/usr/share/fonts/truetype/Montserrat-Bold.ttf"
@@ -3971,7 +3979,7 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
         ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 5, "message": "Creating intro card...", "clip_id": None}
         intro_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_intro.mp4")
         local_files.append(intro_path)
-        safe_topic = topic.replace("'", "'\\''").replace(":", "\\:")
+        safe_topic = ranking_title.replace("'", "'\\''").replace(":", "\\:")
         intro_text_lines = safe_topic.split(" ")
         line1 = " ".join(intro_text_lines[:len(intro_text_lines)//2] or intro_text_lines[:3])
         line2 = " ".join(intro_text_lines[len(intro_text_lines)//2:] or intro_text_lines[3:])
@@ -4005,7 +4013,8 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
 
         rank_colors = ["#FFD700", "#C0C0C0", "#CD7F32", "#c4ff3d", "#60A5FA", "#F59E0B", "#EC4899", "#8B5CF6", "#10B981", "#EF4444"]
 
-        for idx, moment in enumerate(results):
+        # Countdown: process clips from last-ranked (#N) to first (#1)
+        for idx, moment in enumerate(reversed(results)):
             progress = 10 + int(70 * idx / max(len(results), 1))
             ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": progress, "message": f"Processing clip {idx+1}/{len(results)}: {moment.get('title', '')[:40]}...", "clip_id": None}
 
@@ -4013,7 +4022,7 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             start_t = moment.get("start", 0)
             end_t = moment.get("end", 0)
             duration = max(10, end_t - start_t)
-            rank_num = moment.get("rank", idx + 1)
+            rank_num = moment.get("rank", count - idx)
             clip_title = moment.get("title", moment.get("video_title", f"#{rank_num}"))[:50]
             rank_color = rank_colors[(idx) % len(rank_colors)]
 
@@ -4077,24 +4086,26 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 if not os.path.exists(cropped_path) or os.path.getsize(cropped_path) < 1024:
                     continue
 
-            # Add ranking overlay: number badge + title + rank bar
+            # Add ranking overlay: TOP black bar with rank number + ranking title
             safe_title = clip_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
             safe_rank = str(rank_num).replace("'", "'\\''")
+            safe_rtitle = ranking_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")[:30]
 
-            # Bottom gradient + title + rank number
+            # YouTube ranking countdown style: black bar at the top with the
+            # ranking title and the clip's position number.
             overlay_filter = (
-                f"drawbox=x=0:y=ih-180:w=iw:h=180:color=black@0.6:t=fill,"
+                f"drawbox=x=0:y=0:w=iw:h=170:color=black@0.9:t=fill,"
                 f"drawtext=fontfile='{font_bold}':text='#{safe_rank}':"
-                f"fontcolor={rank_color}:fontsize=72:"
-                f"x=40:y=ih-170:"
+                f"fontcolor={rank_color}:fontsize=88:"
+                f"x=30:y=20:"
                 f"shadowcolor=black@0.8:shadowx=3:shadowy=3,"
-                f"drawtext=fontfile='{font_reg}':text='{safe_title}':"
-                f"fontcolor=white:fontsize=32:"
-                f"x=140:y=ih-120:"
+                f"drawtext=fontfile='{font_reg}':text='{safe_rtitle}':"
+                f"fontcolor=white:fontsize=34:"
+                f"x=155:y=30:"
                 f"shadowcolor=black@0.8:shadowx=2:shadowy=2,"
-                f"drawtext=fontfile='{font_reg}':text='TOP {count} — {safe_topic[:30]}':"
-                f"fontcolor=#c4ff3d:fontsize=22:"
-                f"x=140:y=ih-70:"
+                f"drawtext=fontfile='{font_reg}':text='TOP {count} Ranking':"
+                f"fontcolor=#c4ff3d:fontsize=24:"
+                f"x=155:y=100:"
                 f"shadowcolor=black@0.6:shadowx=1:shadowy=1"
             )
 
@@ -4201,7 +4212,7 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
         clip_record = {
             "id": clip_id,
             "user_id": user_id,
-            "title": f"AI Ranking: {topic[:60]}",
+            "title": f"AI Ranking: {ranking_title[:60]}",
             "status": "done",
             "video_url": clip_url,
             "thumbnail_url": thumb_url,
@@ -4210,7 +4221,7 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             "end_time": round(total_duration, 1),
             "youtube_video_id": None,
             "youtube_thumbnail": thumb_url or None,
-            "youtube_title": f"AI Ranking: {topic[:80]}",
+            "youtube_title": f"AI Ranking: {ranking_title[:80]}",
             "youtube_channel": "AI Rankings",
             "youtube_duration": round(total_duration, 1),
         }

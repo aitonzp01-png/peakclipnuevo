@@ -1676,6 +1676,15 @@ body {
   margin-top: 4px;
 }
 
+.ar-generate-block {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 /* ── Simulation ─────────────────────────────────────────────── */
 
 .ar-sim-card {
