@@ -408,6 +408,77 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+async def run_sql_query(sql: str, timeout: int = 20) -> bool:
+    """Execute raw SQL against the Supabase project.
+
+    Auth attempts in order:
+      1. Management API with SUPABASE_MANAGEMENT_TOKEN (Personal Access Token, sbp_...) — works.
+      2. {ref}.supabase.co/sql/v1/query with service key — legacy, usually 404.
+      3. Management API with service key — usually 401 (needs a PAT).
+    Returns True if any endpoint returns 200.
+    """
+    supabase_url = os.getenv("SUPABASE_URL")
+    if not supabase_url:
+        return False
+    project_ref = supabase_url.split("https://")[1].split(".")[0]
+    mgmt_token = os.getenv("SUPABASE_MANAGEMENT_TOKEN")
+    service_key = os.getenv("SUPABASE_SERVICE_KEY")
+    payload = {"query": sql}
+    attempts = []
+    if mgmt_token:
+        attempts.append((
+            "mgmt-api (PAT)",
+            f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+            {"Authorization": f"Bearer {mgmt_token}", "Content-Type": "application/json"},
+        ))
+    if service_key:
+        attempts.append((
+            "project sql/v1",
+            f"https://{project_ref}.supabase.co/sql/v1/query",
+            {"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+        ))
+        attempts.append((
+            "mgmt-api (service key)",
+            f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
+            {"apikey": service_key, "Authorization": f"Bearer {service_key}", "Content-Type": "application/json"},
+        ))
+    for name, url, headers in attempts:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                res = await client.post(url, json=payload, headers=headers)
+            print(f"SQL RUN: {name} -> {res.status_code} {res.text[:120]}")
+            if res.status_code == 200:
+                return True
+        except Exception as e:
+            print(f"SQL RUN: {name} error: {e}")
+    return False
+
+
+RANKINGS_DDL = """
+CREATE TABLE IF NOT EXISTS public.rankings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  topic TEXT NOT NULL,
+  count INTEGER DEFAULT 5,
+  video_length INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'processing',
+  results JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
+CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
+ALTER TABLE public.rankings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS rankings_select_own ON public.rankings;
+CREATE POLICY rankings_select_own ON public.rankings FOR SELECT USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS rankings_insert_own ON public.rankings;
+CREATE POLICY rankings_insert_own ON public.rankings FOR INSERT WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS rankings_update_own ON public.rankings;
+CREATE POLICY rankings_update_own ON public.rankings FOR UPDATE USING (auth.uid() = user_id);
+"""
+
+
 async def run_migrations():
     supabase_url = os.getenv("SUPABASE_URL")
     service_key = os.getenv("SUPABASE_SERVICE_KEY")
@@ -609,42 +680,17 @@ ALTER TABLE public.users ADD COLUMN IF NOT EXISTS current_period_end TIMESTAMPTZ
 
     # Create rankings table if it doesn't exist
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            headers = {
-                "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
-                "Content-Type": "application/json",
-            }
-            rankings_sql = """
-CREATE TABLE IF NOT EXISTS public.rankings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  topic TEXT NOT NULL,
-  count INTEGER DEFAULT 5,
-  video_length INTEGER DEFAULT 30,
-  status TEXT DEFAULT 'processing',
-  results JSONB,
-  error TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
-CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
-"""
-            for url in [
-                f"https://{project_ref}.supabase.co/sql/v1/query",
-                f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
-            ]:
-                try:
-                    res = await client.post(url, json={"query": rankings_sql}, headers=headers)
-                    if res.status_code == 200:
-                        print("SQL MIGRATION: rankings table created (OK)")
-                        try:
-                            await client.post(url, json={"query": "NOTIFY pgrst, 'reload schema'"}, headers=headers)
-                        except Exception:
-                            pass
-                        break
-                except Exception:
-                    pass
+        created_rankings = await run_sql_query(RANKINGS_DDL)
+        if created_rankings:
+            print("SQL MIGRATION: rankings table created (OK)")
+            try:
+                await run_sql_query("NOTIFY pgrst, 'reload schema'", timeout=10)
+            except Exception:
+                pass
+        else:
+            print("⚠️ SQL MIGRATION: rankings table NOT created — DDL unavailable via API")
+            print("   To fix: open the Supabase SQL editor and run RANKINGS_DDL, or")
+            print("   set SUPABASE_MANAGEMENT_TOKEN to a Supabase Personal Access Token and redeploy.")
     except Exception as e:
         print(f"SQL MIGRATION rankings table error: {e}")
 
@@ -3474,50 +3520,16 @@ ranking_jobs: dict = {}
 
 async def ensure_rankings_table():
     """Create rankings table if it doesn't exist."""
-    supabase_url = os.getenv("SUPABASE_URL")
-    service_key = os.getenv("SUPABASE_SERVICE_KEY")
-    if not supabase_url or not service_key:
-        return False
-    project_ref = supabase_url.split("https://")[1].split(".")[0]
-    sql = """
-CREATE TABLE IF NOT EXISTS public.rankings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
-  topic TEXT NOT NULL,
-  count INTEGER DEFAULT 5,
-  video_length INTEGER DEFAULT 30,
-  status TEXT DEFAULT 'processing',
-  results JSONB,
-  error TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
-CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
-"""
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            headers = {
-                "apikey": service_key,
-                "Authorization": f"Bearer {service_key}",
-                "Content-Type": "application/json",
-            }
-            for url in [
-                f"https://{project_ref}.supabase.co/sql/v1/query",
-                f"https://api.supabase.com/v1/projects/{project_ref}/database/query",
-            ]:
-                try:
-                    res = await client.post(url, json={"query": sql}, headers=headers)
-                    print(f"RANKINGS TABLE CREATE: {url.split('/')[-1]} -> {res.status_code} {res.text[:200]}")
-                    if res.status_code == 200:
-                        try:
-                            await client.post(url, json={"query": "NOTIFY pgrst, 'reload schema'"}, headers=headers)
-                        except Exception:
-                            pass
-                        return True
-                except Exception as e:
-                    print(f"RANKINGS TABLE CREATE: {url.split('/')[-1]} error: {e}")
-    except Exception as e:
-        print(f"RANKINGS TABLE CREATE: {e}")
+    ok = await run_sql_query(RANKINGS_DDL)
+    if ok:
+        try:
+            await run_sql_query("NOTIFY pgrst, 'reload schema'", timeout=10)
+        except Exception:
+            pass
+        return True
+    print("⚠️ RANKINGS TABLE NOT CREATED — DDL not available via API")
+    print("   To fix: open the Supabase SQL editor and run the rankings DDL, or")
+    print("   set SUPABASE_MANAGEMENT_TOKEN to a Supabase Personal Access Token and redeploy.")
     return False
 
 
@@ -3572,7 +3584,7 @@ async def start_ranking(req: RankingRequest, background_tasks: BackgroundTasks, 
                 print(f"RANKING INSERT RETRY FAILED: {retry_err}")
                 raise HTTPException(status_code=500, detail=f"Failed to create ranking: {retry_err}")
         else:
-            raise HTTPException(status_code=500, detail="Failed to create rankings table")
+            raise HTTPException(status_code=500, detail="Failed to create rankings table. Run the rankings DDL in the Supabase SQL editor, or set SUPABASE_MANAGEMENT_TOKEN (Supabase PAT) and redeploy.")
 
     background_tasks.add_task(run_ranking_background, ranking_id, user_id, req.topic, req.count, req.video_length, req.language)
     return {"ranking_id": ranking_id, "status": "processing"}
