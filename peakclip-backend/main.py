@@ -1679,6 +1679,30 @@ async def download_with_playwright(url: str, output_path: str) -> bool:
     return False
 
 
+_VISITOR_DATA_CACHE = {"value": None, "ts": 0.0}
+
+
+def get_youtube_visitor_data(force=False):
+    """Fetch YouTube visitor data (used by web_safari/tv_simply clients to get a GVS PO token)."""
+    cached = _VISITOR_DATA_CACHE.get("value")
+    now = time.time()
+    if cached and not force and now - _VISITOR_DATA_CACHE.get("ts", 0) < 3600:
+        return cached
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        }
+        r = httpx.get("https://www.youtube.com/", headers=headers, follow_redirects=True, timeout=20)
+        m = re.search(r'"visitorData":"([^"]+)"', r.text)
+        if m:
+            _VISITOR_DATA_CACHE["value"] = m.group(1)
+            _VISITOR_DATA_CACHE["ts"] = now
+            return m.group(1)
+    except Exception as e:
+        print(f"visitor data fetch failed: {e}")
+    return cached
+
+
 def download_youtube_video_robust(url: str, output_path: str, label: str = "", progress_cb=None) -> tuple[bool, str]:
     """Download a YouTube video using the full robust strategy chain.
 
@@ -1714,22 +1738,23 @@ def download_youtube_video_robust(url: str, output_path: str, label: str = "", p
         last_err = e
 
     # Strategies ordered by success rate from Railway behind Oxylabs proxy.
-    # The android+skip combo is the only one that succeeded (360p).
+    # android_safari works without cookies/POT. web_safari/tv_simply bypass
+    # bot detection but need visitor_data + the bgutil POT server (both wired below).
     strategies = [
+        {'player_client': ['android_safari'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['android_safari'], 'player_skip': ['webpage', 'configs']},
+        {'player_client': ['web_safari'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
+        {'player_client': ['web_safari'], 'player_skip': ['webpage', 'configs']},
+        {'player_client': ['tv_simply'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {'player_client': ['android'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {'player_client': ['android'], 'player_skip': ['webpage', 'configs']},
-        {'player_client': ['android_vr'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {'player_client': ['ios'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-        {'player_client': ['android'], 'player_skip': ['webpage']},
-        {'player_client': ['android']},
         {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
-        {'player_client': ['web_embedded'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {'player_client': ['mweb'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {'player_client': ['web_creator'], 'player_skip': ['webpage', 'configs'], 'include_incomplete_formats': True},
         {},
         {'player_client': ['web']},
         {'player_client': ['ios']},
-        {'player_client': ['tv_embedded'], 'player_skip': ['webpage', 'configs']},
         {'player_client': ['web_embedded']},
         {'player_client': ['web'], 'include_incomplete_formats': True},
     ]
@@ -1744,27 +1769,29 @@ def download_youtube_video_robust(url: str, output_path: str, label: str = "", p
         'Mozilla/5.0 (SMART-TV; Linux; Tizen 8.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/128.0.0.0 TV Safari/537.36',
     ]
     format_fallbacks = [
+        # Progressive first (web_safari/tv_simply only expose progressive mp4)
+        'best[height<=2160][ext=mp4]/best[height<=2160]/best',
         # Best possible with DASH (separate video+audio)
         'bestvideo[height<=2160]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio',
+        # 1080p progressive
+        'best[height<=1080][ext=mp4]/best[height<=1080]/best',
         # 1080p DASH
         'bestvideo[height<=1080]+bestaudio/bestvideo[height<=1080]+bestaudio',
-        # Any DASH with audio
-        'bestvideo+bestaudio',
-        # 4K progressive (combined)
-        'best[height<=2160][ext=mp4]/best[height<=2160]',
-        # 1080p progressive
-        'best[height<=1080][ext=mp4]/best[height<=1080]',
         # 720p progressive (minimum acceptable)
-        'best[height<=720][ext=mp4]/best[height<=720]',
+        'best[height<=720][ext=mp4]/best[height<=720]/best',
+        # Any DASH with audio
+        'bestvideo+bestaudio/best',
         # H.264 + AAC (safest codec combo)
-        'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]',
+        'bv[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/best',
     ]
-    impersonate_profiles = [None, 'chrome', 'safari', 'chrome-120', 'chrome-119', 'safari-17']
+    # Aligned with the strategy list by attempt index.
+    # android_safari/android: no impersonation (protobuf API). web_safari/tv_simply: safari.
+    impersonate_profiles = [None, None, 'safari', 'safari-17', 'safari', 'chrome', 'chrome-120', 'safari-17', None, 'chrome-119', None, 'chrome', None, 'safari-17', 'chrome', 'safari']
 
     # Auth: residential proxy + POT server + extractor strategies
     proxy_url = os.environ.get('YOUTUBE_PROXY')
     po_token = os.environ.get('YOUTUBE_PO_TOKEN')
-    visitor_data = os.environ.get('YOUTUBE_VISITOR_DATA')
+    visitor_data = os.environ.get('YOUTUBE_VISITOR_DATA') or get_youtube_visitor_data()
     has_cookies = os.path.exists(COOKIES_PATH)
 
     max_attempts = 16
