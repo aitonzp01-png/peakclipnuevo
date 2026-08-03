@@ -4052,14 +4052,32 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
         has_cookies = os.path.exists(COOKIES_PATH)
         ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
 
-        rank_colors = ["#FFD700", "#C0C0C0", "#CD7F32", "#c4ff3d", "#60A5FA", "#F59E0B", "#EC4899", "#8B5CF6", "#10B981", "#EF4444"]
-
         # Sort by rank ascending so #1 is processed last (countdown) but reported first.
         ordered = sorted(results, key=lambda m: m.get("rank") or 0)
         segments = []
         running_time = 0.0
         first_clip_url = ""
         first_thumb_url = ""
+
+        def _wrap(txt, limit=15, max_lines=2):
+            words = txt.split()
+            lines = []
+            cur = ""
+            for w in words:
+                if len(w) > limit:
+                    w = w[:limit]
+                if not cur:
+                    cur = w
+                elif len(cur) + 1 + len(w) <= limit:
+                    cur += " " + w
+                else:
+                    lines.append(cur)
+                    cur = w
+                if len(lines) >= max_lines:
+                    break
+            if len(lines) < max_lines and cur:
+                lines.append(cur)
+            return "\n".join(lines[:max_lines])
 
         for pos, moment in enumerate(ordered):
             rank_num = moment.get("rank") or (pos + 1)
@@ -4071,7 +4089,6 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             end_t = moment.get("end", 0)
             duration = max(10, end_t - start_t)
             clip_title = moment.get("title", moment.get("video_title", f"#{rank_num}"))[:50]
-            rank_color = rank_colors[(pos) % len(rank_colors)]
 
             if not video_url:
                 continue
@@ -4132,28 +4149,75 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 if not os.path.exists(cropped_path) or os.path.getsize(cropped_path) < 1024:
                     continue
 
-            # Ranking overlay: black top bar with the big editable title.
-            # Line 1 (always): TOP {count} RANKING
-            # Line 2: the editable ranking title (the "tema")
-            safe_rank = str(rank_num).replace("'", "'\\''")
-            display_rtitle = ranking_title[:32] + ("..." if len(ranking_title) > 32 else "")
-            safe_rtitle = display_rtitle.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
+            # Ranking overlay — design matched to the reference channel
+            # ("Ene Rankings" style): a fixed top header with the RANKING
+            # wordmark (lime green fill + red outline) and the ranking topic
+            # in white bold, plus a left column listing the TOP 5 positions
+            # with the current clip's rank highlighted.
+            display_rtitle = ranking_title[:40] + ("..." if len(ranking_title) > 40 else "")
 
-            overlay_filter = (
-                f"drawbox=x=0:y=0:w=iw:h=200:color=black@0.9:t=fill,"
-                f"drawtext=fontfile='{font_bold}':text='#{safe_rank}':"
-                f"fontcolor={rank_color}:fontsize=96:"
-                f"x=30:y=24:"
-                f"shadowcolor=black@0.8:shadowx=3:shadowy=3,"
-                f"drawtext=fontfile='{font_bold}':text='TOP {count} RANKING':"
-                f"fontcolor=white:fontsize=46:"
-                f"x=170:y=22:"
-                f"shadowcolor=black@0.8:shadowx=2:shadowy=2,"
-                f"drawtext=fontfile='{font_reg}':text='{safe_rtitle}':"
-                f"fontcolor=#c4ff3d:fontsize=34:"
-                f"x=170:y=98:"
-                f"shadowcolor=black@0.6:shadowx=1:shadowy=1"
+            topic_tf = os.path.join(tempfile.gettempdir(), f"{gen_id}_topic{pos}.txt")
+            with open(topic_tf, "w", encoding="utf-8") as _f:
+                _f.write(_wrap(display_rtitle, limit=16, max_lines=2))
+            local_files.append(topic_tf)
+
+            # Left column: the TOP 5 entries, highest number at the top
+            # (5 -> 1 countdown), current rank highlighted.
+            top_entries = sorted(ordered, key=lambda m: (m.get("rank") or 0))[:5]
+            rank_order = list(reversed(top_entries))
+            col_x = 48
+            label_y = 556
+            row_h = 84
+            row_y0 = 616
+            col_filters = [
+                f"drawtext=fontfile='{font_bold}':text='RANKING':fontcolor=white:fontsize=30:"
+                f"borderw=2:bordercolor=black@0.7:shadowcolor=black@0.6:shadowx=1:shadowy=1:"
+                f"x={col_x}:y={label_y}"
+            ]
+            for idx, m2 in enumerate(rank_order):
+                r2 = m2.get("rank") or (idx + 1)
+                t2 = (m2.get("title") or m2.get("video_title") or f"#{r2}")[:40]
+                is_active = (r2 == rank_num)
+                y = row_y0 + idx * row_h
+                num = str(r2)
+                if is_active:
+                    col_filters.append(
+                        f"drawbox=x={col_x - 8}:y={y - 6}:w=96:h={row_h - 12}:color=#D6E408@0.95:t=fill,"
+                        f"drawtext=fontfile='{font_bold}':text='{num}':fontcolor=#14532d:fontsize=46:"
+                        f"borderw=2:bordercolor=black@0.5:"
+                        f"x={col_x}:y={y + 4}"
+                    )
+                else:
+                    col_filters.append(
+                        f"drawtext=fontfile='{font_bold}':text='{num}':fontcolor=white@0.55:fontsize=30:"
+                        f"borderw=1:bordercolor=black@0.4:"
+                        f"x={col_x + 14}:y={y + 16}"
+                    )
+                title_tf = os.path.join(tempfile.gettempdir(), f"{gen_id}_ct{pos}_{r2}.txt")
+                with open(title_tf, "w", encoding="utf-8") as _f:
+                    _f.write(_wrap(t2, limit=15, max_lines=2))
+                local_files.append(title_tf)
+                tx = col_x + 112
+                ty = y + (6 if is_active else 16)
+                col_filters.append(
+                    f"drawtext=fontfile='{font_bold if is_active else font_reg}':textfile='{title_tf}':"
+                    f"fontcolor=white@{'1.0' if is_active else '0.55'}:fontsize={'26' if is_active else '23'}:"
+                    f"borderw={2 if is_active else 1}:bordercolor=black@0.5:"
+                    f"shadowcolor=black@0.6:shadowx=1:shadowy=1:"
+                    f"x={tx}:y={ty}:line_spacing=6"
+                )
+
+            header = (
+                f"drawbox=x=0:y=0:w=iw:h=210:color=black@0.30:t=fill,"
+                f"drawtext=fontfile='{font_bold}':text='RANKING':fontcolor=#D6E408:fontsize=52:"
+                f"borderw=4:bordercolor=#C00020@0.9:shadowcolor=black@0.7:shadowx=3:shadowy=3:"
+                f"x=(w-text_w)/2:y=40,"
+                f"drawtext=fontfile='{font_bold}':textfile='{topic_tf}':fontcolor=white:fontsize=44:"
+                f"borderw=3:bordercolor=black@0.6:shadowcolor=black@0.8:shadowx=2:shadowy=2:"
+                f"x=(w-text_w)/2:y=140:line_spacing=8"
             )
+            col_panel = "drawbox=x=40:y=556:w=310:h=500:color=black@0.18:t=fill,"
+            overlay_filter = ",".join([header, col_panel] + col_filters)
 
             overlay_ok = _ffmpeg([
                 'ffmpeg', '-y', '-i', cropped_path,
