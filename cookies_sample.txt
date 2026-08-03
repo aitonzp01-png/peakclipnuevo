@@ -1,0 +1,2 @@
+# Netscape HTTP Cookie File
+.youtube.com	TRUE	/	TRUE	0	SAPISID	ABC123

@@ -1,0 +1,134 @@
+======================================================
+  PROMPT DETALLADO PARA CLAUDE - ARREGLAR SUBTÍTULOS
+======================================================
+
+Claude, necesito que arregles 3 bugs de subtítulos en el archivo
+peakclip-backend/main.py de un proyecto Python/Flask.
+
+Cada bug incluye:
+- Ubicación exacta (líneas)
+- Código actual
+- Cambio requerido
+- Contexto adicional
+
+======================================================
+BUG 1: SRT vacío crashea ffmpeg
+======================================================
+
+Ubicación: función generate_srt_subtitle, línea 760 de main.py
+
+Problema:
+Cuando ningún word de transcripción cae dentro del clip (clip_words
+vacío), la función escribe un archivo de 0 bytes. Luego ffmpeg recibe
+ese SRT vacío y crashea con:
+"Invalid data found when processing input"
+Esto hace que toda la exportación del clip falle.
+
+Código actual (líneas 760-766):
+
+    def generate_srt_subtitle(words, clip_start, clip_end, output_path):
+        """Generate SRT phrase-level subtitles grouped into natural reading chunks."""
+        clip_words = [w for w in words if w['start'] < clip_end and w['end'] > clip_start]
+        if not clip_words:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("")
+            return
+
+Cambio requerido:
+Cuando clip_words está vacío, en vez de escribir un archivo vacío,
+escribir un SRT dummy válido con al menos una entrada fantasma para
+que ffmpeg no falle. Reemplazar:
+
+    f.write("")
+
+por:
+
+    f.write("1\n00:00:00,000 --> 00:00:00,100\n \n")
+
+Esto genera un subtítulo de 100ms invisible que ffmpeg puede
+procesar sin problema.
+
+La función continúa después del return normalmente.
+
+======================================================
+BUG 2: Upload SRT a Supabase da 415 MIME not supported
+======================================================
+
+Ubicación: main.py líneas 1896 y 2644
+
+Problema:
+El archivo SRT se sube a Supabase Storage con MIME type
+"application/octet-stream", pero Supabase lo rechaza con:
+
+    415 "mime type is not supported"
+
+Esto ocurre aunque en el startup del bucket se configuró
+allowed_mime_types incluyendo "text/plain" y "application/json".
+Parece que la configuración del bucket no se actualiza realmente
+con el PUT de startup, y el bucket quedó creado con restricciones
+por defecto que no incluyen "application/octet-stream".
+
+Código actual en línea 1896:
+
+    srt_storage_url = upload_with_verification(
+        supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
+    )
+
+Código actual en línea 2644:
+
+    srt_storage_url = upload_with_verification(
+        supabase, "clips", srt_path, srt_storage_path, "application/octet-stream"
+    )
+
+Cambio requerido (hacer AMBAS opciones):
+
+Opción 1 (principal):
+Cambiar "application/octet-stream" por "text/plain" en las líneas
+1896 y 2644. "text/plain" es un MIME type estándar para SRT y está
+en la lista allowed_mime_types que se configura en el startup.
+
+Opción 2 (workaround si Opción 1 falla):
+Cambiar a "video/mp4" que es un MIME type más comunmente aceptado en
+el bucket de video clips. NO es correcto semánticamente pero funciona.
+
+Además, verificar que el bucket config startup (líneas 444-454)
+esté realmente aplicando los allowed_mime_types. Si no funciona,
+habría que ejecutar manualmente:
+
+    UPDATE storage.buckets
+    SET allowed_mime_types = ARRAY['video/mp4', 'video/webm',
+        'video/quicktime', 'image/jpeg', 'image/png', 'text/plain',
+        'application/json']
+    WHERE id = 'clips';
+
+En el SQL Editor de Supabase Dashboard.
+
+======================================================
+BUG 3: Guardado condicional del SRT
+======================================================
+
+Ubicación: main.py líneas 1893 y 2641
+
+Problema:
+Este if es el guarda que evita subir el SRT si está vacío:
+
+    if os.path.exists(srt_path) and os.path.getsize(srt_path) > 0:
+
+Con el fix del Bug 1, el archivo NUNCA estará vacío (siempre tendrá
+al menos el SRT dummy). Esto significa que:
+
+1. El if siempre será True, incluso para clips sin palabras reales
+2. El SRT dummy se subirá a Supabase y se guardará en la DB
+
+Esto es ACEPTABLE, pero hay que verificar que el srt_content guardado
+en la columna subtitles_srt de la tabla clips contenga correctamente
+el SRT dummy y que el frontend (editor) pueda manejarlo sin errores.
+
+No requiere cambio de código, solo verificación.
+
+======================================================
+ARCHIVO: peakclip-backend/main.py
+RUTA COMPLETA: /peakclip-backend/main.py
+LENGUAJE: Python 3.x
+FRAMEWORK: Flask + httpx + Supabase
+======================================================

@@ -1,0 +1,40 @@
+INSTRUCCIONES - CREAR TABLA rankings EN SUPABASE
+==================================================
+
+PASO 1
+Abrir el SQL editor:
+https://supabase.com/dashboard/project/tjuiourlpbwivjzyewav/sql/new
+
+PASO 2
+Pegar todo esto y hacer clic en RUN:
+
+--------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.rankings (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  topic TEXT NOT NULL,
+  count INTEGER DEFAULT 5,
+  video_length INTEGER DEFAULT 30,
+  status TEXT DEFAULT 'processing',
+  results JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rankings_user_id ON public.rankings(user_id);
+CREATE INDEX IF NOT EXISTS idx_rankings_created_at ON public.rankings(created_at DESC);
+ALTER TABLE public.rankings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS rankings_select_own ON public.rankings;
+CREATE POLICY rankings_select_own ON public.rankings FOR SELECT USING (auth.uid() = user_id);
+DROP POLICY IF EXISTS rankings_insert_own ON public.rankings;
+CREATE POLICY rankings_insert_own ON public.rankings FOR INSERT WITH CHECK (auth.uid() = user_id);
+DROP POLICY IF EXISTS rankings_update_own ON public.rankings;
+CREATE POLICY rankings_update_own ON public.rankings FOR UPDATE USING (auth.uid() = user_id);
+NOTIFY pgrst, 'reload schema';
+--------------------------------------------------
+
+PASO 3
+Debe salir "Success. No rows returned" SIN errores rojos.
+Si sale error, copiar el mensaje y avisarme.
+
+PASO 4
+Avisarme y yo verifico que la tabla ya existe y probamos.

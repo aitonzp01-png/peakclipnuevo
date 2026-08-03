@@ -924,6 +924,43 @@ def debug():
     }
 
 
+@app.get("/debug_frames")
+def debug_frames(vid: str = ""):
+    """TEMP: download a youtube video and return base64 frames for design analysis."""
+    import base64
+    import tempfile
+    if not vid:
+        return {"error": "vid required"}
+    url = f"https://www.youtube.com/watch?v={vid}"
+    tmpdir = tempfile.mkdtemp(prefix="frames_")
+    out = os.path.join(tmpdir, "ref.mp4")
+    ok, err = download_youtube_video_robust(url, out, label="FRAMES: ")
+    if not ok:
+        return {"error": f"download failed: {err}"}
+    import subprocess as sp
+    # probe duration
+    probe = sp.run(['ffmpeg', '-i', out, '-f', 'null', '-'], capture_output=True, text=True)
+    import re
+    dur_m = re.search(r'Duration:\s*(\d+):(\d+):(\d+)\.(\d+)', probe.stderr)
+    dur = 27.0
+    if dur_m:
+        hh, mm, ss, ff = dur_m.groups()
+        dur = int(hh) * 3600 + int(mm) * 60 + int(ss) + int(ff) / 100
+    # sample ~12 frames evenly across the video
+    n = 12
+    times = [max(0.2, i * (dur / n)) for i in range(n)]
+    frames = {}
+    for i, t in enumerate(times):
+        fout = os.path.join(tmpdir, f"f{i}.jpg")
+        r = sp.run(['ffmpeg', '-ss', str(t), '-i', out, '-frames:v', '1',
+                    '-vf', 'scale=-2:720', '-q:v', '4', fout, '-y'],
+                   capture_output=True, text=True)
+        if os.path.exists(fout):
+            with open(fout, 'rb') as f:
+                frames[f"{i}@{t:.1f}s"] = base64.b64encode(f.read()).decode()
+    return {"duration": dur, "count": len(frames), "frames": frames}
+
+
 def generate_thumbnail(video_path, output_path, timestamp=5):
     subprocess.run([
         'ffmpeg', '-ss', str(timestamp), '-i', video_path,
