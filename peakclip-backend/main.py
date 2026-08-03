@@ -3661,25 +3661,33 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
         if has_cookies:
             search_opts['cookiefile'] = COOKIES_PATH
 
-        # Multi-round search strictly limited to the Shorts tab (vertical clips).
-        # The `sp=EgIYAQ==` filter restricts YouTube search results to Shorts.
-        # Titles that look like other rankings/compilations are dropped so the
-        # pool stays original clips.
+        # Candidate sourcing: many Shorts-tab rounds (sp=EgIYAQ==) with topic
+        # variants, plus a few regular `ytsearch` rounds for extra supply.
+        # Titles that clearly are other rankings/compilations are dropped so the
+        # pool stays original clips, and entries with no views are junk.
         RANKING_NOISE_RE = re.compile(
-            r"\bcompilat\w*\b|\btop\s*[0-9]+\b|\bcountdown\b|\brank(?:ing|ed)?\b|"
-            r"\b(?:the\s+)?(?:best|greatest|worst|ultimate|biggest)\s+(?:of|moments?|highlights?|clips?|videos?)\b|"
-            r"\b(?:moments?|highlights?)\s+(?:compilation|of\s+(?:the\s+)?(?:week|month|year|all|time))\b",
+            r"\bcompilat\w*\b|\btop\s*[0-9]+\b|\bcountdown\b|\brank\w*\b",
             re.IGNORECASE,
         )
         seen_ids = set()
         candidate_videos = []
-        search_rounds = [topic, f"{topic} shorts", f"{topic} #shorts", f"{topic} viral shorts", f"{topic} original"]
-        for round_idx, round_query in enumerate(search_rounds):
+        topic_variants = [topic]
+        for suffix in ["shorts", "#shorts", "viral", "best", "funny", "epic", "crazy", "moments", "fail", "amazing"]:
+            variant = f"{topic} {suffix}".strip()
+            if variant not in topic_variants:
+                topic_variants.append(variant)
+        search_rounds = [(q, "shorts") for q in topic_variants[:10]]
+        search_rounds += [(f"{topic} {suffix}", "yt") for suffix in ["shorts", "#shorts", "viral"]]
+        collected_shorts = 0
+        for round_idx, (round_query, kind) in enumerate(search_rounds):
             ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube Shorts for '{round_query}'...", "results": None, "topic": topic}
             try:
                 with yt_dlp.YoutubeDL(search_opts) as ydl:
-                    search_url = f"https://www.youtube.com/results?search_query={quote(round_query)}&sp=EgIYAQ%3D%3D"
-                    info = ydl.extract_info(search_url, download=False)
+                    if kind == "shorts":
+                        search_url = f"https://www.youtube.com/results?search_query={quote(round_query)}&sp=EgIYAQ%3D%3D"
+                        info = ydl.extract_info(search_url, download=False)
+                    else:
+                        info = ydl.extract_info(f"ytsearch{search_count}:{round_query}", download=False)
                 entries = (info or {}).get("entries") or []
                 for e in entries:
                     vid = e.get("id")
@@ -3687,22 +3695,29 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
                         continue
                     if vid:
                         seen_ids.add(vid)
+                    if not (e.get("url") or vid):
+                        continue
                     title = e.get("title") or ""
                     if RANKING_NOISE_RE.search(title):
                         continue
-                    if e.get("url") or vid:
-                        candidate_videos.append(e)
+                    views = e.get("view_count") or 0
+                    dur = e.get("duration") or 0
+                    e["_views"] = views
+                    e["_is_short"] = dur in range(1, 61) or dur <= 0
+                    candidate_videos.append(e)
+                    if e["_is_short"] and views > 0:
+                        collected_shorts += 1
             except Exception as e:
                 print(f"RANKING {ranking_id}: search round {round_idx+1} failed: {e}")
-            print(f"RANKING {ranking_id}: search round {round_idx+1}: '{round_query}' — {len(candidate_videos)} candidates so far")
-            if len(candidate_videos) >= count * 4:
+            print(f"RANKING {ranking_id}: search round {round_idx+1}: '{round_query}' — {len(candidate_videos)} candidates, {collected_shorts} usable Shorts so far")
+            if collected_shorts >= count * 3:
                 break
 
         # Only vertical Shorts (<= 60s, unknown duration treated as Short), viral first.
-        for e in candidate_videos:
-            e["_is_short"] = (e.get("duration") or 0) in range(1, 61) or (e.get("duration") or 0) <= 0
-            e["_views"] = e.get("view_count") or 0
-        shorts = sorted([e for e in candidate_videos if e["_is_short"]], key=lambda e: e["_views"], reverse=True)
+        shorts = sorted(
+            [e for e in candidate_videos if e["_is_short"] and e["_views"] > 0],
+            key=lambda e: e["_views"], reverse=True,
+        )
         candidate_videos = shorts[: max(search_count * 2, 35)]
         print(f"RANKING {ranking_id}: {len(candidate_videos)} vertical Short candidates")
 
@@ -4074,7 +4089,6 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             # Ranking overlay: black top bar with the big editable title.
             # Line 1 (always): TOP {count} RANKING
             # Line 2: the editable ranking title (the "tema")
-            safe_title = clip_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
             safe_rank = str(rank_num).replace("'", "'\\''")
             display_rtitle = ranking_title[:32] + ("..." if len(ranking_title) > 32 else "")
             safe_rtitle = display_rtitle.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
