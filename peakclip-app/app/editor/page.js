@@ -25,6 +25,8 @@ import {
 } from 'lucide-react'
 
 // --- CONSTANTS ---
+const RANK_CLIP_COLORS = ['#FFD700', '#C0C0C0', '#CD7F32', '#c4ff3d', '#60A5FA', '#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#EF4444']
+
 const FONTS = [
   'Inter', 'Montserrat', 'Oswald', 'Bebas Neue', 'Anton',
   'Roboto Condensed', 'Poppins', 'Arial Black', 'Impact', 'Playfair Display'
@@ -206,6 +208,16 @@ export default function EditorPage() {
     { id: 'vid-main', track: 'video', start: 0, duration: 39, title: 'Original video.mp4', color: '#9ca3af', type: 'video' }
   ])
   const [rankingSegments, setRankingSegments] = useState([])
+  const [activeVideoItemId, setActiveVideoItemId] = useState(null)
+  const pendingSeekRef = useRef(null)
+
+  // Multi-clip mode: ranking clips are independent video-track elements, each
+  // with its own source file (no pre-concatenated video).
+  const videoItems = useMemo(
+    () => timelineItems.filter(x => x.track === 'video' && x.src),
+    [timelineItems]
+  )
+  const isMultiClipMode = videoItems.length > 0
   const [selectedTimelineItemId, setSelectedTimelineItemId] = useState('vid-main')
   const [draggingTimelineItem, setDraggingTimelineItem] = useState(null)
   const timelineDragMoved = useRef(false)
@@ -409,7 +421,29 @@ export default function EditorPage() {
             }
 
             if (clipData.brand_settings && Array.isArray(clipData.brand_settings.ranking_segments)) {
-              setRankingSegments(clipData.brand_settings.ranking_segments)
+              const segs = clipData.brand_settings.ranking_segments
+              setRankingSegments(segs)
+              if (segs.some(s => s.video_url)) {
+                const total = segs.reduce((acc, s) => Math.max(acc, (s.start || 0) + (s.duration || 0)), 0)
+                const items = segs.map((s, i) => ({
+                  id: `rankclip-${s.rank ?? i + 1}`,
+                  track: 'video',
+                  start: s.start || 0,
+                  duration: s.duration || 1,
+                  title: s.title ? `#${s.rank ?? i + 1} ${s.title}` : `#${s.rank ?? i + 1}`,
+                  src: s.video_url,
+                  thumb: s.thumbnail_url || '',
+                  rank: s.rank ?? i + 1,
+                }))
+                setTimelineItems(items)
+                setSelectedTimelineItemId(items[0]?.id || '')
+                setActiveVideoItemId(items[0]?.id || null)
+                setDuration(total)
+                setVideoSrc(items[0]?.src || clipData.video_url)
+                setDisplayVideoSrc(items[0]?.src || clipData.video_url)
+                setTrimStart(0)
+                setTrimEnd(total)
+              }
             }
           }
         } else {
@@ -569,7 +603,16 @@ export default function EditorPage() {
                 primary: brandColorPrimary,
                 secondary: brandColorSecondary,
                 logoPosition: brandLogoPosition,
-                ranking_segments: rankingSegments
+                ranking_segments: isMultiClipMode
+                  ? videoItems.map(x => ({
+                      rank: x.rank,
+                      title: x.title.replace(/^#\d+ /, ''),
+                      start: x.start,
+                      duration: x.duration,
+                      video_url: x.src,
+                      thumbnail_url: x.thumb || '',
+                    }))
+                  : rankingSegments
               }
             })
             .eq('id', clipId)
@@ -1116,8 +1159,37 @@ export default function EditorPage() {
 
   const handleTimeUpdate = useCallback(() => {
     if (!videoRef.current) return
-    setCurrentTime(videoRef.current.currentTime)
-  }, [])
+    const v = videoRef.current
+    if (isMultiClipMode) {
+      const active = videoItems.find(i => i.id === activeVideoItemId) || videoItems[0]
+      if (active) {
+        const clipEnd = active.start + active.duration
+        if (v.currentTime >= active.duration - 0.05) {
+          if (!v.paused) {
+            const next = videoItems.filter(i => i.start >= clipEnd - 0.1).sort((a, b) => a.start - b.start)[0]
+            if (next) {
+              setActiveVideoItemId(next.id)
+              if (next.src !== displayVideoSrc) {
+                setDisplayVideoSrc(next.src)
+                pendingSeekRef.current = 0
+              } else {
+                v.currentTime = 0
+              }
+              setCurrentTime(next.start)
+              return
+            }
+            v.pause()
+            setIsPlaying(false)
+            setCurrentTime(clipEnd)
+            return
+          }
+        }
+        setCurrentTime(Math.min(clipEnd, active.start + v.currentTime))
+        return
+      }
+    }
+    setCurrentTime(v.currentTime)
+  }, [videoItems, activeVideoItemId, displayVideoSrc, isMultiClipMode])
 
   const drawSubtitles = useCallback((videoTime) => {
     drawSubtitlesOnCanvas(subtitleCanvasRef.current, videoTime)
@@ -1301,7 +1373,13 @@ export default function EditorPage() {
   const handleTimelineMouseUp = () => {
     if (draggingTimelineItem) {
       const item = timelineItems.find(x => x.id === draggingTimelineItem.id)
-      if (item && item.track === 'subtitle') {
+      if (item && item.track === 'video') {
+        if (timelineDragMoved.current) {
+          saveToHistory({ title: clipTitle })
+        } else {
+          seekTo(item.start)
+        }
+      } else if (item && item.track === 'subtitle') {
         if (timelineDragMoved.current) {
           const wordId = item.id.replace('sub-', '')
           setActiveTranscript(prev => prev.map(w =>
@@ -1354,6 +1432,18 @@ export default function EditorPage() {
   }
 
   const handleDeleteSelectedTimelineItem = () => {
+    if (isMultiClipMode) {
+      if (videoItems.length <= 1) {
+        triggerToast('error', 'At least one clip must remain')
+        return
+      }
+      const remaining = timelineItems.filter(x => x.id !== selectedTimelineItemId)
+      setTimelineItems(remaining)
+      setSelectedTimelineItemId(remaining[0]?.id || '')
+      setActiveVideoItemId(remaining[0]?.id || null)
+      triggerToast('success', 'Clip deleted')
+      return
+    }
     if (selectedTimelineItemId === 'vid-main') {
       triggerToast('error', 'You can\'t delete the original video track')
       return
@@ -1362,6 +1452,13 @@ export default function EditorPage() {
     setSelectedTimelineItemId('vid-main')
     triggerToast('success', 'Item deleted')
   }
+
+  // Keep the timeline duration in sync with the video clips in multi-clip mode.
+  useEffect(() => {
+    if (!isMultiClipMode || videoItems.length === 0) return
+    const total = videoItems.reduce((acc, x) => Math.max(acc, x.start + x.duration), 0)
+    if (Math.abs(total - duration) > 0.05) setDuration(total)
+  }, [videoItems, isMultiClipMode])
 
   const applyPreset = (preset) => {
     setSelectedPresetId(preset.id)
@@ -1550,8 +1647,25 @@ export default function EditorPage() {
   const seekTo = (t) => {
     if (!videoRef.current) return
     const boundedTime = Math.max(0, Math.min(duration, t))
-    videoRef.current.currentTime = boundedTime
     setCurrentTime(boundedTime)
+    if (isMultiClipMode) {
+      const item = videoItems.find(i => boundedTime >= i.start - 0.01 && boundedTime <= i.start + i.duration + 0.01)
+      if (item) {
+        setActiveVideoItemId(item.id)
+        const vidT = Math.max(0, boundedTime - item.start)
+        const sameSrc = videoRef.current.currentSrc
+          ? videoRef.current.currentSrc.split('?')[0].endsWith(item.src.split('?')[0])
+          : false
+        if (sameSrc) {
+          videoRef.current.currentTime = vidT
+        } else {
+          setDisplayVideoSrc(item.src)
+          pendingSeekRef.current = vidT
+        }
+      }
+    } else {
+      videoRef.current.currentTime = boundedTime
+    }
   }
 
   // --- MOBILE HELPERS ---
@@ -1653,6 +1767,9 @@ export default function EditorPage() {
   }
 
   const activeSubtitleId = selectedSubtitleId || activeTranscript[0]?.id || null
+
+  // In multi-clip mode, export the currently selected clip.
+  const exportVideoItem = isMultiClipMode ? (videoItems.find(x => x.id === selectedTimelineItemId) || videoItems[0]) : null
 
   const editorContent = loading ? (
     <div style={{
@@ -2101,7 +2218,7 @@ export default function EditorPage() {
               <video
                 ref={videoRef}
                 src={displayVideoSrc}
-                loop
+                loop={!isMultiClipMode}
                 playsInline
                 preload="metadata"
                 onPlay={() => setIsPlaying(true)}
@@ -2118,7 +2235,15 @@ export default function EditorPage() {
                 }}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={() => {
-                  if (videoRef.current?.duration) setDuration(videoRef.current.duration)
+                  if (!isMultiClipMode) {
+                    if (videoRef.current?.duration) setDuration(videoRef.current.duration)
+                  }
+                  if (pendingSeekRef.current != null) {
+                    const ps = pendingSeekRef.current
+                    pendingSeekRef.current = null
+                    if (videoRef.current) videoRef.current.currentTime = ps
+                  }
+                  if (isPlaying && videoRef.current) videoRef.current.play().catch(() => {})
                 }}
                 style={{
                   width: '100%',
@@ -2816,42 +2941,59 @@ export default function EditorPage() {
                 <div style={{ display: 'flex', alignItems: 'center', borderBottom: '1px solid #e5e5e0', minHeight: '48px' }}>
                   <span style={{ width: '52px', flexShrink: 0, textAlign: 'right', paddingRight: '8px', fontSize: '9px', fontWeight: '700', color: '#71717a', letterSpacing: '0.5px', textTransform: 'uppercase' }}>Video</span>
                   <div ref={timelineRef} onClick={handleTimelineClick} style={{ flex: 1, height: '48px', position: 'relative', cursor: 'pointer', background: '#f8f8f5' }}>
-                    <div style={{ position: 'absolute', top: '6px', bottom: '6px', left: 0, right: 0, background: '#ffffff', borderRadius: '6px', border: '1px solid #e5e5e0', display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden' }}>
-                      <div style={{ display: 'flex', gap: '1px', height: '100%', alignItems: 'center' }}>
-                        {Array.from({length: 30}).map((_, i) => (
-                          <div key={i} style={{ width: '4px', height: '24px', background: '#d0d0ca', borderRadius: '1px', flexShrink: 0 }} />
-                        ))}
-                      </div>
-                      <span style={{ position: 'absolute', left: '8px', fontSize: '9px', color: '#9ca3af', fontWeight: '600' }}>video.mp4</span>
-                    </div>
-                    {/* Ranking segments: each ranked clip is one segment, in ranking order */}
-                    {rankingSegments.map((seg, i) => {
-                      const segStart = seg.start || 0
-                      const segDur = seg.duration || 0
-                      const startPct = duration > 0 ? (segStart / duration) * 100 : 0
-                      const widthPct = duration > 0 ? (segDur / duration) * 100 : 0
-                      const isCurrent = currentTime >= segStart && currentTime <= segStart + segDur
-                      const rankColors = ['#FFD700', '#C0C0C0', '#CD7F32', '#c4ff3d', '#60A5FA', '#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#EF4444']
-                      const color = rankColors[i % rankColors.length]
-                      return (
-                        <div key={i} onClick={(e) => { e.stopPropagation(); seekTo(segStart) }}
-                          title={`#${seg.rank} ${seg.title} — ${Math.round(segDur)}s`}
-                          style={{
-                            position: 'absolute', top: '4px', bottom: '4px',
-                            left: `${startPct}%`, width: `${Math.max(widthPct, 0.4)}%`,
-                            borderRadius: '6px', cursor: 'pointer', overflow: 'hidden',
-                            background: isCurrent ? `linear-gradient(180deg, ${color}, ${color}66)` : `linear-gradient(180deg, ${color}cc, ${color}55)`,
-                            border: `1px solid ${color}88`,
-                            boxShadow: isCurrent ? `0 0 10px ${color}44` : 'none',
-                            zIndex: 5, display: 'flex', alignItems: 'center', padding: '0 6px',
-                            transition: 'all 0.1s',
-                          }}>
-                          <span style={{ fontSize: '9px', fontWeight: '800', color: '#0a0a0a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.1, textShadow: '0 1px 2px rgba(255,255,255,0.5)' }}>
-                            #{seg.rank} {seg.title}
-                          </span>
+                    {isMultiClipMode ? (
+                      videoItems.map(item => {
+                        const isSel = selectedTimelineItemId === item.id
+                        const isCur = activeVideoItemId === item.id
+                        const startPct = duration > 0 ? (item.start / duration) * 100 : 0
+                        const widthPct = duration > 0 ? (item.duration / duration) * 100 : 0
+                        const color = RANK_CLIP_COLORS[(item.rank - 1) % RANK_CLIP_COLORS.length]
+                        return (
+                          <div
+                            key={item.id}
+                            onMouseDown={(e) => handleTimelineMouseDown(e, item, 'move')}
+                            onClick={(e) => e.stopPropagation()}
+                            title={`#${item.rank} ${item.title.replace(/^#\d+ /, '')} — ${Math.round(item.duration)}s`}
+                            style={{
+                              position: 'absolute', top: '5px', bottom: '5px',
+                              left: `${startPct}%`, width: `${Math.max(widthPct, 1)}%`,
+                              borderRadius: '6px', cursor: 'grab', overflow: 'hidden',
+                              background: isCur
+                                ? `linear-gradient(180deg, ${color}, ${color}66)`
+                                : `linear-gradient(180deg, ${color}cc, ${color}55)`,
+                              border: `1px solid ${isSel ? '#0a0a0a' : color}88`,
+                              boxShadow: isCur ? `0 0 10px ${color}44` : 'none',
+                              zIndex: 5, display: 'flex', alignItems: 'center', padding: '0 6px',
+                              transition: 'all 0.1s',
+                            }}
+                          >
+                            {item.thumb && (
+                              <img src={item.thumb} alt="" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', opacity: 0.35, pointerEvents: 'none' }} />
+                            )}
+                            <span style={{ position: 'relative', fontSize: '9px', fontWeight: '800', color: '#0a0a0a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.1, textShadow: '0 1px 2px rgba(255,255,255,0.5)' }}>
+                              #{item.rank}
+                            </span>
+                            <div
+                              onMouseDown={(e) => { e.stopPropagation(); handleTimelineMouseDown(e, item, 'resize-left') }}
+                              style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: '8px', cursor: 'ew-resize', background: 'rgba(0,0,0,0.15)', borderRight: '1px solid rgba(0,0,0,0.2)' }}
+                            />
+                            <div
+                              onMouseDown={(e) => { e.stopPropagation(); handleTimelineMouseDown(e, item, 'resize-right') }}
+                              style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: '8px', cursor: 'ew-resize', background: 'rgba(0,0,0,0.15)', borderLeft: '1px solid rgba(0,0,0,0.2)' }}
+                            />
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <div style={{ position: 'absolute', top: '6px', bottom: '6px', left: 0, right: 0, background: '#ffffff', borderRadius: '6px', border: '1px solid #e5e5e0', display: 'flex', alignItems: 'center', padding: '0 8px', overflow: 'hidden' }}>
+                        <div style={{ display: 'flex', gap: '1px', height: '100%', alignItems: 'center' }}>
+                          {Array.from({length: 30}).map((_, i) => (
+                            <div key={i} style={{ width: '4px', height: '24px', background: '#d0d0ca', borderRadius: '1px', flexShrink: 0 }} />
+                          ))}
                         </div>
-                      )
-                    })}
+                        <span style={{ position: 'absolute', left: '8px', fontSize: '9px', color: '#9ca3af', fontWeight: '600' }}>video.mp4</span>
+                      </div>
+                    )}
                     {/* Playhead */}
                     <div style={{ position: 'absolute', top: 0, bottom: 0, width: '2px', background: '#ff1f1f', left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`, zIndex: 20, pointerEvents: 'none', boxShadow: '0 0 8px rgba(255,31,31,0.4)' }}>
                       <div style={{ position: 'absolute', top: '-1px', left: '-4px', width: '10px', height: '10px', background: '#ff1f1f', borderRadius: '50%', boxShadow: '0 0 12px rgba(255,31,31,0.6)' }} />
@@ -2996,12 +3138,12 @@ export default function EditorPage() {
         show={showExportModal}
         onClose={() => setShowExportModal(false)}
         clipId={clipId}
-        videoSrc={displayVideoSrc || videoSrc}
+        videoSrc={exportVideoItem ? exportVideoItem.src : (displayVideoSrc || videoSrc)}
         activeTranscript={activeTranscript}
         subtitleStyle={subtitleStyle}
-        trimStart={trimStart}
-        trimEnd={effectiveTrimEnd}
-        duration={duration}
+        trimStart={exportVideoItem ? 0 : trimStart}
+        trimEnd={exportVideoItem ? exportVideoItem.duration : effectiveTrimEnd}
+        duration={exportVideoItem ? exportVideoItem.duration : duration}
         musicTrack={activeMusicTrack}
         musicVolume={musicVolume}
         subtitleMode={wordByWordPresets.includes(selectedPresetId) ? 'word' : 'phrase'}
