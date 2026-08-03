@@ -4003,8 +4003,8 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 print(f"  stderr[-500]: {r.stderr.decode(errors='replace')[-500:]}")
             return ok
 
-        # Each ranked clip is generated as its OWN standalone video file so the
-        # user can edit every clip separately (no concatenation).
+        # Every ranked clip becomes a segment of ONE final video. The segments
+        # are saved so the editor can render each one separately in the timeline.
         proxy_url = os.environ.get('YOUTUBE_PROXY')
         has_cookies = os.path.exists(COOKIES_PATH)
         ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
@@ -4013,7 +4013,9 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
 
         # Sort by rank ascending so #1 is processed last (countdown) but reported first.
         ordered = sorted(results, key=lambda m: m.get("rank") or 0)
-        generated_clips = []
+        clip_sources = []
+        segments = []
+        running_time = 0.0
 
         for pos, moment in enumerate(ordered):
             rank_num = moment.get("rank") or (pos + 1)
@@ -4137,27 +4139,7 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             if not audio_ok or not os.path.exists(final_clip) or os.path.getsize(final_clip) < 1024:
                 final_clip = overlay_path
 
-            ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 10 + int(80 * pos / max(count, 1)), "message": f"Uploading clip #{rank_num}: {clip_title[:40]}...", "clip_id": None, "clips": None}
-
-            # Upload each clip separately
-            clip_id = str(uuid.uuid4())
-            storage_path = f"clips/{clip_id}.mp4"
-            clip_url = upload_with_verification(supabase, "clips", final_clip, storage_path, "video/mp4")
-            if not clip_url:
-                print(f"RANKING GEN: clip #{rank_num} upload failed, skipping")
-                continue
-
-            # Thumbnail from the clip itself
-            thumb_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_thumb{pos}.jpg")
-            local_files.append(thumb_path)
-            subprocess.run([
-                'ffmpeg', '-y', '-i', final_clip, '-vframes', '1', '-q:v', '2', thumb_path
-            ], capture_output=True, timeout=30)
-            thumb_url = ""
-            if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
-                thumb_storage = f"thumbnails/{clip_id}.jpg"
-                thumb_url = upload_with_verification(supabase, "clips", thumb_path, thumb_storage, "image/jpeg") or ""
-
+            # Keep this clip for the final concatenation and record its segment.
             try:
                 probe = subprocess.run([
                     'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
@@ -4167,43 +4149,90 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
             except Exception:
                 clip_duration = duration
 
-            clip_record = {
-                "id": clip_id,
-                "user_id": user_id,
-                "title": f"#{rank_num} {clip_title} | AI Ranking: {ranking_title[:40]}",
-                "status": "done",
-                "video_url": clip_url,
-                "thumbnail_url": thumb_url,
-                "duration": round(clip_duration, 1),
-                "start_time": 0,
-                "end_time": round(clip_duration, 1),
-                "youtube_video_id": moment.get("video_id"),
-                "youtube_thumbnail": thumb_url or None,
-                "youtube_title": clip_title[:80],
-                "youtube_channel": "AI Rankings",
-                "youtube_duration": round(clip_duration, 1),
-            }
-            try:
-                supabase.table("clips").insert(clip_record).execute()
-            except Exception as db_err:
-                print(f"RANKING GEN: DB insert failed for clip #{rank_num}: {db_err}")
-
-            generated_clips.append({
-                "clip_id": clip_id,
+            clip_sources.append(final_clip)
+            segments.append({
                 "rank": rank_num,
                 "title": clip_title,
-                "video_url": clip_url,
-                "thumbnail_url": thumb_url,
-                "duration": round(clip_duration, 1),
+                "start": round(running_time, 2),
+                "duration": round(clip_duration, 2),
             })
+            running_time += clip_duration
 
-        if not generated_clips:
+        if not clip_sources:
             ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "No clips could be processed"}
             return
 
-        generated_clips.sort(key=lambda c: c["rank"])
-        ranking_gen_jobs[gen_id] = {"status": "done", "user_id": user_id, "progress": 100, "message": "Done!", "clips": generated_clips, "clip_id": generated_clips[0]["clip_id"]}
-        print(f"RANKING GEN {gen_id}: DONE — {len(generated_clips)} clips generated")
+        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 88, "message": f"Concatenating {len(clip_sources)} clips into one video...", "clip_id": None, "clips": None}
+
+        # Concatenate every ranked clip into ONE video, in ranking order.
+        concat_list = os.path.join(tempfile.gettempdir(), f"{gen_id}_list.txt")
+        local_files.append(concat_list)
+        with open(concat_list, "w") as f:
+            for cp in clip_sources:
+                f.write(f"file '{cp}'\n")
+
+        final_video = os.path.join(tempfile.gettempdir(), f"{gen_id}_final.mp4")
+        local_files.append(final_video)
+        concat_ok = _ffmpeg([
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', concat_list,
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20',
+            '-c:a', 'aac', '-b:a', '128k', '-pix_fmt', 'yuv420p',
+            '-movflags', '+faststart', '-threads', '2',
+            '-x264-params', 'threads=2:bframes=0:ref=1',
+            final_video
+        ], "concat", timeout=600)
+
+        if not concat_ok:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Failed to create the final video"}
+            return
+
+        total_duration = round(running_time, 1) or 1.0
+
+        # Thumbnail from the first frame
+        thumb_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_thumb.jpg")
+        local_files.append(thumb_path)
+        subprocess.run([
+            'ffmpeg', '-y', '-i', final_video, '-vframes', '1', '-q:v', '2', thumb_path
+        ], capture_output=True, timeout=30)
+
+        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 95, "message": "Uploading final video...", "clip_id": None, "clips": None}
+
+        # Upload the single final video
+        clip_id = str(uuid.uuid4())
+        storage_path = f"clips/{clip_id}.mp4"
+        clip_url = upload_with_verification(supabase, "clips", final_video, storage_path, "video/mp4")
+        if not clip_url:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Upload failed"}
+            return
+
+        thumb_url = ""
+        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
+            thumb_storage = f"thumbnails/{clip_id}.jpg"
+            thumb_url = upload_with_verification(supabase, "clips", thumb_path, thumb_storage, "image/jpeg") or ""
+
+        clip_record = {
+            "id": clip_id,
+            "user_id": user_id,
+            "title": f"AI Ranking: {ranking_title[:60]}",
+            "status": "done",
+            "video_url": clip_url,
+            "thumbnail_url": thumb_url,
+            "duration": total_duration,
+            "start_time": 0,
+            "end_time": total_duration,
+            "youtube_thumbnail": thumb_url or None,
+            "youtube_title": f"AI Ranking: {ranking_title[:80]}",
+            "youtube_channel": "AI Rankings",
+            "youtube_duration": total_duration,
+            "brand_settings": {"ranking_segments": segments},
+        }
+        try:
+            supabase.table("clips").insert(clip_record).execute()
+        except Exception as db_err:
+            print(f"RANKING GEN: DB insert failed: {db_err}")
+
+        ranking_gen_jobs[gen_id] = {"status": "done", "user_id": user_id, "progress": 100, "message": "Done!", "clip_id": clip_id, "segments": segments}
+        print(f"RANKING GEN {gen_id}: DONE — single video with {len(segments)} segments")
 
     except Exception as e:
         print(f"RANKING GEN {gen_id}: fatal error: {e}")

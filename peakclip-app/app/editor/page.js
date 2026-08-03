@@ -205,6 +205,7 @@ export default function EditorPage() {
   const [timelineItems, setTimelineItems] = useState([
     { id: 'vid-main', track: 'video', start: 0, duration: 39, title: 'Original video.mp4', color: '#9ca3af', type: 'video' }
   ])
+  const [rankingSegments, setRankingSegments] = useState([])
   const [selectedTimelineItemId, setSelectedTimelineItemId] = useState('vid-main')
   const [draggingTimelineItem, setDraggingTimelineItem] = useState(null)
   const timelineDragMoved = useRef(false)
@@ -406,6 +407,10 @@ export default function EditorPage() {
                 setSelectedPresetId(clipData.subtitle_style.presetId)
               }
             }
+
+            if (clipData.brand_settings && Array.isArray(clipData.brand_settings.ranking_segments)) {
+              setRankingSegments(clipData.brand_settings.ranking_segments)
+            }
           }
         } else {
           // Default demo clip
@@ -563,7 +568,8 @@ export default function EditorPage() {
               brand_settings: {
                 primary: brandColorPrimary,
                 secondary: brandColorSecondary,
-                logoPosition: brandLogoPosition
+                logoPosition: brandLogoPosition,
+                ranking_segments: rankingSegments
               }
             })
             .eq('id', clipId)
@@ -2818,6 +2824,34 @@ export default function EditorPage() {
                       </div>
                       <span style={{ position: 'absolute', left: '8px', fontSize: '9px', color: '#9ca3af', fontWeight: '600' }}>video.mp4</span>
                     </div>
+                    {/* Ranking segments: each ranked clip is one segment, in ranking order */}
+                    {rankingSegments.map((seg, i) => {
+                      const segStart = seg.start || 0
+                      const segDur = seg.duration || 0
+                      const startPct = duration > 0 ? (segStart / duration) * 100 : 0
+                      const widthPct = duration > 0 ? (segDur / duration) * 100 : 0
+                      const isCurrent = currentTime >= segStart && currentTime <= segStart + segDur
+                      const rankColors = ['#FFD700', '#C0C0C0', '#CD7F32', '#c4ff3d', '#60A5FA', '#F59E0B', '#EC4899', '#8B5CF6', '#10B981', '#EF4444']
+                      const color = rankColors[i % rankColors.length]
+                      return (
+                        <div key={i} onClick={(e) => { e.stopPropagation(); seekTo(segStart) }}
+                          title={`#${seg.rank} ${seg.title} — ${Math.round(segDur)}s`}
+                          style={{
+                            position: 'absolute', top: '4px', bottom: '4px',
+                            left: `${startPct}%`, width: `${Math.max(widthPct, 0.4)}%`,
+                            borderRadius: '6px', cursor: 'pointer', overflow: 'hidden',
+                            background: isCurrent ? `linear-gradient(180deg, ${color}, ${color}66)` : `linear-gradient(180deg, ${color}cc, ${color}55)`,
+                            border: `1px solid ${color}88`,
+                            boxShadow: isCurrent ? `0 0 10px ${color}44` : 'none',
+                            zIndex: 5, display: 'flex', alignItems: 'center', padding: '0 6px',
+                            transition: 'all 0.1s',
+                          }}>
+                          <span style={{ fontSize: '9px', fontWeight: '800', color: '#0a0a0a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.1, textShadow: '0 1px 2px rgba(255,255,255,0.5)' }}>
+                            #{seg.rank} {seg.title}
+                          </span>
+                        </div>
+                      )
+                    })}
                     {/* Playhead */}
                     <div style={{ position: 'absolute', top: 0, bottom: 0, width: '2px', background: '#ff1f1f', left: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`, zIndex: 20, pointerEvents: 'none', boxShadow: '0 0 8px rgba(255,31,31,0.4)' }}>
                       <div style={{ position: 'absolute', top: '-1px', left: '-4px', width: '10px', height: '10px', background: '#ff1f1f', borderRadius: '50%', boxShadow: '0 0 12px rgba(255,31,31,0.6)' }} />
