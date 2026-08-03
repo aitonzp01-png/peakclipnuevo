@@ -22,6 +22,7 @@ import {
   ExternalLink,
   RefreshCw,
   AlertCircle,
+  Download,
 } from 'lucide-react';
 import { getSupabaseClient } from '../../../lib/supabase';
 import '../dashboard.css';
@@ -204,6 +205,7 @@ export default function AIRankings({ setToast }) {
   const [genProgress, setGenProgress] = useState(0);
   const [genMessage, setGenMessage] = useState('');
   const [videoTitle, setVideoTitle] = useState('');
+  const [generatedClips, setGeneratedClips] = useState([]);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -322,6 +324,7 @@ export default function AIRankings({ setToast }) {
     setGenId(null);
     setGenProgress(0);
     setGenMessage('');
+    setGeneratedClips([]);
     if (timerRef.current) clearInterval(timerRef.current);
   }, []);
 
@@ -376,7 +379,11 @@ export default function AIRankings({ setToast }) {
         setGenMessage(data.message || 'Processing...');
         if (data.status === 'done') {
           clearInterval(interval);
-          if (data.clip_id) {
+          if (data.clips && data.clips.length > 0) {
+            setGeneratedClips(data.clips);
+            setToast({ type: 'success', text: `${data.clips.length} clips generated — edit each one separately` });
+            setPhase('results');
+          } else if (data.clip_id) {
             window.location.href = `/editor?id=${data.clip_id}`;
           } else {
             setToast({ type: 'success', text: 'Video generated!' });
@@ -682,18 +689,64 @@ export default function AIRankings({ setToast }) {
             )}
           </div>
 
+          {generatedClips.length > 0 && (
+            <div className="ar-gen-clips">
+              <div className="ar-gen-clips-header">
+                <h3 className="ar-gen-clips-title">Your Ranking Clips</h3>
+                <p className="ar-gen-clips-subtitle">
+                  Each clip is its own video. Click Edit to open and customize it individually.
+                </p>
+              </div>
+              <div className="ar-gen-clips-grid">
+                {generatedClips.map((clip) => (
+                  <div key={clip.clip_id} className="ar-gen-clip-card">
+                    <div className="ar-gen-clip-thumb-wrap">
+                      {clip.thumbnail_url ? (
+                        <img src={clip.thumbnail_url} alt={clip.title} className="ar-gen-clip-thumb" />
+                      ) : (
+                        <div className="ar-gen-clip-thumb-bg">
+                          <Play size={22} strokeWidth={1.5} />
+                        </div>
+                      )}
+                      <span className="ar-gen-clip-rank">#{clip.rank}</span>
+                    </div>
+                    <div className="ar-gen-clip-body">
+                      <span className="ar-gen-clip-title">{clip.title}</span>
+                      <span className="ar-gen-clip-dur">{Math.round(clip.duration || 0)}s</span>
+                      <div className="ar-gen-clip-actions">
+                        <a href={`/editor?id=${clip.clip_id}`} className="ar-gen-clip-btn ar-gen-clip-btn-primary">
+                          <Play size={12} strokeWidth={2} />
+                          Edit
+                        </a>
+                        <a
+                          href={clip.video_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="ar-gen-clip-btn"
+                        >
+                          <Download size={12} strokeWidth={2} />
+                          Download
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {results && results.length > 0 && (
             <div className="ar-generate-block">
               <div className="ar-field">
                 <label className="ar-field-label">Ranking Video Title</label>
-                <span className="ar-field-hint">Shown on the top black bar of every clip</span>
+                <span className="ar-field-hint">{`Shown in big on the top black bar: "TOP ${rankingSize || results.length} RANKING ${videoTitle || '...'}"`}</span>
                 <div className="ar-input-container">
                   <Clapperboard size={16} strokeWidth={1.5} className="ar-input-icon" />
                   <input
                     type="text"
                     value={videoTitle}
                     onChange={(e) => setVideoTitle(e.target.value)}
-                    placeholder={`Example: TOP 5 ${topic.slice(0, 30)}...`}
+                    placeholder={`Example: ${topic.slice(0, 40)}`}
                     className="ar-input"
                   />
                 </div>

@@ -3637,7 +3637,7 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
 
     try:
         # ── STEP 1: Search YouTube ──
-        ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{topic}'...", "results": None}
+        ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{topic}'...", "results": None, "topic": topic}
         print(f"RANKING {ranking_id}: searching YouTube for '{topic}' ({search_count} results)")
 
         proxy_url = os.environ.get('YOUTUBE_PROXY')
@@ -3661,20 +3661,25 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
         if has_cookies:
             search_opts['cookiefile'] = COOKIES_PATH
 
-        # Multi-round search biased to vertical Shorts. The `sp=EgIYAQ==` filter
-        # restricts YouTube search results to the Shorts tab (vertical clips).
+        # Multi-round search strictly limited to the Shorts tab (vertical clips).
+        # The `sp=EgIYAQ==` filter restricts YouTube search results to Shorts.
+        # Titles that look like other rankings/compilations are dropped so the
+        # pool stays original clips.
+        RANKING_NOISE_RE = re.compile(
+            r"\bcompilat\w*\b|\btop\s*[0-9]+\b|\bcountdown\b|\brank(?:ing|ed)?\b|"
+            r"\b(?:the\s+)?(?:best|greatest|worst|ultimate|biggest)\s+(?:of|moments?|highlights?|clips?|videos?)\b|"
+            r"\b(?:moments?|highlights?)\s+(?:compilation|of\s+(?:the\s+)?(?:week|month|year|all|time))\b",
+            re.IGNORECASE,
+        )
         seen_ids = set()
         candidate_videos = []
-        search_rounds = [topic, f"{topic} shorts", f"{topic} #shorts", f"{topic} best moments", f"{topic} viral shorts"]
+        search_rounds = [topic, f"{topic} shorts", f"{topic} #shorts", f"{topic} viral shorts", f"{topic} original"]
         for round_idx, round_query in enumerate(search_rounds):
-            ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube for '{round_query}'...", "results": None}
+            ranking_jobs[ranking_id] = {"status": "processing", "user_id": user_id, "step": "searching", "progress": 5, "message": f"Searching YouTube Shorts for '{round_query}'...", "results": None, "topic": topic}
             try:
                 with yt_dlp.YoutubeDL(search_opts) as ydl:
-                    if round_idx < 3:
-                        search_url = f"https://www.youtube.com/results?search_query={quote(round_query)}&sp=EgIYAQ%3D%3D"
-                        info = ydl.extract_info(search_url, download=False)
-                    else:
-                        info = ydl.extract_info(f"ytsearch{search_count}:{round_query}", download=False)
+                    search_url = f"https://www.youtube.com/results?search_query={quote(round_query)}&sp=EgIYAQ%3D%3D"
+                    info = ydl.extract_info(search_url, download=False)
                 entries = (info or {}).get("entries") or []
                 for e in entries:
                     vid = e.get("id")
@@ -3682,6 +3687,9 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
                         continue
                     if vid:
                         seen_ids.add(vid)
+                    title = e.get("title") or ""
+                    if RANKING_NOISE_RE.search(title):
+                        continue
                     if e.get("url") or vid:
                         candidate_videos.append(e)
             except Exception as e:
@@ -3690,14 +3698,13 @@ def run_ranking_background(ranking_id: str, user_id: str, topic: str, count: int
             if len(candidate_videos) >= count * 4:
                 break
 
-        # Prefer vertical Shorts (<= 60s) and rank by view count (viral first).
+        # Only vertical Shorts (<= 60s, unknown duration treated as Short), viral first.
         for e in candidate_videos:
             e["_is_short"] = (e.get("duration") or 0) in range(1, 61) or (e.get("duration") or 0) <= 0
             e["_views"] = e.get("view_count") or 0
         shorts = sorted([e for e in candidate_videos if e["_is_short"]], key=lambda e: e["_views"], reverse=True)
-        others = sorted([e for e in candidate_videos if not e["_is_short"]], key=lambda e: e["_views"], reverse=True)
-        candidate_videos = (shorts + others)[: max(search_count * 2, 35)]
-        print(f"RANKING {ranking_id}: {len(candidate_videos)} total candidate videos ({len(shorts)} vertical Shorts)")
+        candidate_videos = shorts[: max(search_count * 2, 35)]
+        print(f"RANKING {ranking_id}: {len(candidate_videos)} vertical Short candidates")
 
         if not candidate_videos:
             ranking_jobs[ranking_id] = {"status": "error", "user_id": user_id, "message": "No videos found for this topic"}
@@ -3931,7 +3938,7 @@ async def generate_ranking_video(ranking_id: str, request: Request, background_t
         raise HTTPException(status_code=404, detail="No ranking results found. Run ranking first.")
 
     gen_id = str(uuid.uuid4())
-    ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 0, "message": "Starting video generation...", "clip_id": None}
+    ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 0, "message": "Starting video generation...", "clip_id": None, "clips": None}
 
     background_tasks.add_task(generate_ranking_video_background, gen_id, ranking_id, user_id, results, title)
     return {"gen_id": gen_id, "status": "processing"}
@@ -3949,10 +3956,16 @@ async def get_ranking_gen_status(gen_id: str, user: dict = Depends(get_current_u
 
 def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str, results: list, title: str = ""):
     local_files = []
-    temp_files = []
 
     try:
         topic = ranking_jobs.get(ranking_id, {}).get("topic", "") or "Top Ranking"
+        if not topic or topic == "Top Ranking":
+            try:
+                db_row = supabase.table("rankings").select("topic").eq("id", ranking_id).execute()
+                if db_row.data and db_row.data[0].get("topic"):
+                    topic = db_row.data[0]["topic"]
+            except Exception:
+                pass
         ranking_title = (title or topic).strip() or "Top Ranking"
         count = len(results)
         font_bold = "/usr/share/fonts/truetype/Montserrat-ExtraBold.ttf"
@@ -3975,63 +3988,36 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 print(f"  stderr[-500]: {r.stderr.decode(errors='replace')[-500:]}")
             return ok
 
-        # ── Step 1: Create intro card ──
-        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 5, "message": "Creating intro card...", "clip_id": None}
-        intro_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_intro.mp4")
-        local_files.append(intro_path)
-        safe_topic = ranking_title.replace("'", "'\\''").replace(":", "\\:")
-        intro_text_lines = safe_topic.split(" ")
-        line1 = " ".join(intro_text_lines[:len(intro_text_lines)//2] or intro_text_lines[:3])
-        line2 = " ".join(intro_text_lines[len(intro_text_lines)//2:] or intro_text_lines[3:])
-        if not line2:
-            line2 = ""
-
-        intro_drawtext = f"drawtext=fontfile='{font_bold}':text='{line1}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h/2)-80:shadowcolor=black:shadowx=2:shadowy=2"
-        if line2:
-            intro_drawtext += f",drawtext=fontfile='{font_bold}':text='{line2}':fontcolor=white:fontsize=52:x=(w-text_w)/2:y=(h/2):shadowcolor=black:shadowx=2:shadowy=2"
-        intro_drawtext += f",drawtext=fontfile='{font_reg}':text='TOP {count}':fontcolor=#c4ff3d:fontsize=36:x=(w-text_w)/2:y=(h/2)+80:shadowcolor=black:shadowx=2:shadowy=2"
-        intro_drawtext += ",drawbox=x=0:y=0:w=iw:h=ih:color=0x0a0a0a:t=fill"
-
-        intro_cmd = [
-            'ffmpeg', '-y', '-f', 'lavfi', '-i', f'color=c=0x0a0a0a:s={W}x{H}:d=3:r=30',
-            '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
-            '-vf', intro_drawtext,
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-t', '3', '-shortest',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-            '-threads', '2',
-            intro_path
-        ]
-        _ffmpeg(intro_cmd, "intro", timeout=60)
-
-        # ── Step 2: Download + process each ranked clip ──
-        clip_paths = []
+        # Each ranked clip is generated as its OWN standalone video file so the
+        # user can edit every clip separately (no concatenation).
         proxy_url = os.environ.get('YOUTUBE_PROXY')
         has_cookies = os.path.exists(COOKIES_PATH)
         ytdlp_script = os.path.join(os.path.dirname(__file__), 'ytdlp_download.py')
 
         rank_colors = ["#FFD700", "#C0C0C0", "#CD7F32", "#c4ff3d", "#60A5FA", "#F59E0B", "#EC4899", "#8B5CF6", "#10B981", "#EF4444"]
 
-        # Countdown: process clips from last-ranked (#N) to first (#1)
-        for idx, moment in enumerate(reversed(results)):
-            progress = 10 + int(70 * idx / max(len(results), 1))
-            ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": progress, "message": f"Processing clip {idx+1}/{len(results)}: {moment.get('title', '')[:40]}...", "clip_id": None}
+        # Sort by rank ascending so #1 is processed last (countdown) but reported first.
+        ordered = sorted(results, key=lambda m: m.get("rank") or 0)
+        generated_clips = []
+
+        for pos, moment in enumerate(ordered):
+            rank_num = moment.get("rank") or (pos + 1)
+            progress = 10 + int(70 * pos / max(count, 1))
+            ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": progress, "message": f"Creating clip #{rank_num}: {moment.get('title', '')[:40]}...", "clip_id": None, "clips": None}
 
             video_url = moment.get("video_url", "")
             start_t = moment.get("start", 0)
             end_t = moment.get("end", 0)
             duration = max(10, end_t - start_t)
-            rank_num = moment.get("rank", count - idx)
             clip_title = moment.get("title", moment.get("video_title", f"#{rank_num}"))[:50]
-            rank_color = rank_colors[(idx) % len(rank_colors)]
+            rank_color = rank_colors[(pos) % len(rank_colors)]
 
             if not video_url:
                 continue
 
-            raw_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_raw{idx}.mp4")
-            cropped_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_crop{idx}.mp4")
-            overlay_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_over{idx}.mp4")
+            raw_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_raw{pos}.mp4")
+            cropped_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_crop{pos}.mp4")
+            overlay_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_over{pos}.mp4")
             local_files.extend([raw_path, cropped_path, overlay_path])
 
             # Download
@@ -4060,10 +4046,10 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                     capture_output=True, text=True, timeout=120,
                 )
                 if dl_result.returncode != 0 or not os.path.exists(raw_path) or os.path.getsize(raw_path) < 1024:
-                    print(f"RANKING GEN: clip {idx+1} download failed, skipping")
+                    print(f"RANKING GEN: clip #{rank_num} download failed, skipping")
                     continue
             except Exception as e:
-                print(f"RANKING GEN: clip {idx+1} download error: {e}")
+                print(f"RANKING GEN: clip #{rank_num} download error: {e}")
                 continue
 
             # Crop to 720x1280 vertical
@@ -4075,37 +4061,37 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 '-threads', '2', '-x264-params', 'threads=2:bframes=0:ref=1',
                 '-an',
                 cropped_path
-            ], f"crop{idx}", timeout=300)
+            ], f"crop{pos}", timeout=300)
 
             if not crop_ok:
-                # Fallback: just extract
                 _ffmpeg([
                     'ffmpeg', '-y', '-ss', str(start_t), '-i', raw_path, '-t', str(duration),
                     '-c', 'copy', cropped_path
-                ], f"extract{idx}", timeout=120)
+                ], f"extract{pos}", timeout=120)
                 if not os.path.exists(cropped_path) or os.path.getsize(cropped_path) < 1024:
                     continue
 
-            # Add ranking overlay: TOP black bar with rank number + ranking title
+            # Ranking overlay: black top bar with the big editable title.
+            # Line 1 (always): TOP {count} RANKING
+            # Line 2: the editable ranking title (the "tema")
             safe_title = clip_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
             safe_rank = str(rank_num).replace("'", "'\\''")
-            safe_rtitle = ranking_title.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")[:30]
+            display_rtitle = ranking_title[:32] + ("..." if len(ranking_title) > 32 else "")
+            safe_rtitle = display_rtitle.replace("'", "'\\''").replace(":", "\\:").replace("\\", "\\\\")
 
-            # YouTube ranking countdown style: black bar at the top with the
-            # ranking title and the clip's position number.
             overlay_filter = (
-                f"drawbox=x=0:y=0:w=iw:h=170:color=black@0.9:t=fill,"
+                f"drawbox=x=0:y=0:w=iw:h=200:color=black@0.9:t=fill,"
                 f"drawtext=fontfile='{font_bold}':text='#{safe_rank}':"
-                f"fontcolor={rank_color}:fontsize=88:"
-                f"x=30:y=20:"
+                f"fontcolor={rank_color}:fontsize=96:"
+                f"x=30:y=24:"
                 f"shadowcolor=black@0.8:shadowx=3:shadowy=3,"
-                f"drawtext=fontfile='{font_reg}':text='{safe_rtitle}':"
-                f"fontcolor=white:fontsize=34:"
-                f"x=155:y=30:"
+                f"drawtext=fontfile='{font_bold}':text='TOP {count} RANKING':"
+                f"fontcolor=white:fontsize=46:"
+                f"x=170:y=22:"
                 f"shadowcolor=black@0.8:shadowx=2:shadowy=2,"
-                f"drawtext=fontfile='{font_reg}':text='TOP {count} Ranking':"
-                f"fontcolor=#c4ff3d:fontsize=24:"
-                f"x=155:y=100:"
+                f"drawtext=fontfile='{font_reg}':text='{safe_rtitle}':"
+                f"fontcolor=#c4ff3d:fontsize=34:"
+                f"x=170:y=98:"
                 f"shadowcolor=black@0.6:shadowx=1:shadowy=1"
             )
 
@@ -4117,133 +4103,100 @@ def generate_ranking_video_background(gen_id: str, ranking_id: str, user_id: str
                 '-threads', '2', '-x264-params', 'threads=2:bframes=0:ref=1',
                 '-an',
                 overlay_path
-            ], f"overlay{idx}", timeout=300)
+            ], f"overlay{pos}", timeout=300)
 
             if not overlay_ok:
                 overlay_path = cropped_path
 
-            clip_paths.append(overlay_path)
-
-        # ── Step 3: Generate silent audio for all clips ──
-        for ci, cp in enumerate(clip_paths):
-            silent_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_silent{ci}.mp4")
-            temp_files.append(silent_path)
-            _ffmpeg([
-                'ffmpeg', '-y', '-i', cp,
+            # Re-encode with a silent AAC audio track so the editor can play it.
+            final_clip = os.path.join(tempfile.gettempdir(), f"{gen_id}_clip{pos}.mp4")
+            local_files.append(final_clip)
+            audio_ok = _ffmpeg([
+                'ffmpeg', '-y', '-i', overlay_path,
                 '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo',
                 '-c:v', 'copy', '-c:a', 'aac', '-b:a', '128k',
                 '-map', '0:v:0', '-map', '1:a:0',
-                '-shortest', '-t', '10',
+                '-shortest', '-t', str(duration),
                 '-pix_fmt', 'yuv420p',
-                silent_path
-            ], f"silent{ci}", timeout=60)
-            if os.path.exists(silent_path) and os.path.getsize(silent_path) > 1024:
-                clip_paths[ci] = silent_path
+                final_clip
+            ], f"audio{pos}", timeout=60)
+            if not audio_ok or not os.path.exists(final_clip) or os.path.getsize(final_clip) < 1024:
+                final_clip = overlay_path
 
-        # ── Step 4: Concatenate all clips ──
-        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 85, "message": "Stitching final video...", "clip_id": None}
+            ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 10 + int(80 * pos / max(count, 1)), "message": f"Uploading clip #{rank_num}: {clip_title[:40]}...", "clip_id": None, "clips": None}
 
-        concat_list = os.path.join(tempfile.gettempdir(), f"{gen_id}_concat.txt")
-        temp_files.append(concat_list)
-        concat_items = []
-        if os.path.exists(intro_path) and os.path.getsize(intro_path) > 1024:
-            concat_items.append(intro_path)
-        concat_items.extend(clip_paths)
+            # Upload each clip separately
+            clip_id = str(uuid.uuid4())
+            storage_path = f"clips/{clip_id}.mp4"
+            clip_url = upload_with_verification(supabase, "clips", final_clip, storage_path, "video/mp4")
+            if not clip_url:
+                print(f"RANKING GEN: clip #{rank_num} upload failed, skipping")
+                continue
 
-        if len(concat_items) == 0:
-            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "No clips could be processed"}
-            return
+            # Thumbnail from the clip itself
+            thumb_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_thumb{pos}.jpg")
+            local_files.append(thumb_path)
+            subprocess.run([
+                'ffmpeg', '-y', '-i', final_clip, '-vframes', '1', '-q:v', '2', thumb_path
+            ], capture_output=True, timeout=30)
+            thumb_url = ""
+            if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
+                thumb_storage = f"thumbnails/{clip_id}.jpg"
+                thumb_url = upload_with_verification(supabase, "clips", thumb_path, thumb_storage, "image/jpeg") or ""
 
-        with open(concat_list, 'w') as f:
-            for item in concat_items:
-                safe = item.replace('\\', '/').replace("'", "'\\''")
-                f.write(f"file '{safe}'\n")
-
-        final_output = os.path.join(tempfile.gettempdir(), f"{gen_id}_final.mp4")
-        local_files.append(final_output)
-        concat_ok = _ffmpeg([
-            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-            '-i', concat_list,
-            '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '20',
-            '-c:a', 'aac', '-b:a', '128k',
-            '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
-            '-threads', '2',
-            final_output
-        ], "concat", timeout=600)
-
-        if not concat_ok or not os.path.exists(final_output) or os.path.getsize(final_output) < 1024:
-            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Failed to create final video"}
-            return
-
-        # ── Step 5: Upload to Supabase Storage ──
-        ranking_gen_jobs[gen_id] = {"status": "processing", "user_id": user_id, "progress": 92, "message": "Uploading video...", "clip_id": None}
-
-        clip_id = str(uuid.uuid4())
-        storage_path = f"clips/{clip_id}.mp4"
-        clip_url = upload_with_verification(supabase, "clips", final_output, storage_path, "video/mp4")
-        if not clip_url:
-            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "Upload failed"}
-            return
-
-        # Generate thumbnail from intro
-        thumb_path = os.path.join(tempfile.gettempdir(), f"{gen_id}_thumb.jpg")
-        local_files.append(thumb_path)
-        subprocess.run([
-            'ffmpeg', '-y', '-i', intro_path, '-vframes', '1', '-q:v', '2', thumb_path
-        ], capture_output=True, timeout=30)
-        thumb_url = ""
-        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 100:
-            thumb_storage = f"thumbnails/{clip_id}.jpg"
-            thumb_url = upload_with_verification(supabase, "clips", thumb_path, thumb_storage, "image/jpeg") or ""
-
-        # ── Step 6: Save clip record in DB ──
-        total_duration = 0
-        for ci in concat_items:
             try:
                 probe = subprocess.run([
                     'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                    '-of', 'default=noprint_wrappers=1:nokey=1', ci
+                    '-of', 'default=noprint_wrappers=1:nokey=1', final_clip
                 ], capture_output=True, text=True, timeout=10)
-                if probe.returncode == 0:
-                    total_duration += float(probe.stdout.strip() or 0)
+                clip_duration = float(probe.stdout.strip() or 0) if probe.returncode == 0 else duration
             except Exception:
-                total_duration += 10
+                clip_duration = duration
 
-        clip_record = {
-            "id": clip_id,
-            "user_id": user_id,
-            "title": f"AI Ranking: {ranking_title[:60]}",
-            "status": "done",
-            "video_url": clip_url,
-            "thumbnail_url": thumb_url,
-            "duration": round(total_duration, 1),
-            "start_time": 0,
-            "end_time": round(total_duration, 1),
-            "youtube_video_id": None,
-            "youtube_thumbnail": thumb_url or None,
-            "youtube_title": f"AI Ranking: {ranking_title[:80]}",
-            "youtube_channel": "AI Rankings",
-            "youtube_duration": round(total_duration, 1),
-        }
-        try:
-            supabase.table("clips").insert(clip_record).execute()
-        except Exception as db_err:
-            print(f"RANKING GEN: DB insert failed: {db_err}")
+            clip_record = {
+                "id": clip_id,
+                "user_id": user_id,
+                "title": f"#{rank_num} {clip_title} | AI Ranking: {ranking_title[:40]}",
+                "status": "done",
+                "video_url": clip_url,
+                "thumbnail_url": thumb_url,
+                "duration": round(clip_duration, 1),
+                "start_time": 0,
+                "end_time": round(clip_duration, 1),
+                "youtube_video_id": moment.get("video_id"),
+                "youtube_thumbnail": thumb_url or None,
+                "youtube_title": clip_title[:80],
+                "youtube_channel": "AI Rankings",
+                "youtube_duration": round(clip_duration, 1),
+            }
             try:
-                fallback = {k: v for k, v in clip_record.items() if k not in ("hook_score", "mood", "reason", "engagement_factors", "retention_prediction", "words_json")}
-                supabase.table("clips").insert(fallback).execute()
-            except Exception:
-                pass
+                supabase.table("clips").insert(clip_record).execute()
+            except Exception as db_err:
+                print(f"RANKING GEN: DB insert failed for clip #{rank_num}: {db_err}")
 
-        ranking_gen_jobs[gen_id] = {"status": "done", "user_id": user_id, "progress": 100, "message": "Done!", "clip_id": clip_id}
-        print(f"RANKING GEN {gen_id}: DONE — clip_id={clip_id} duration={total_duration:.1f}s")
+            generated_clips.append({
+                "clip_id": clip_id,
+                "rank": rank_num,
+                "title": clip_title,
+                "video_url": clip_url,
+                "thumbnail_url": thumb_url,
+                "duration": round(clip_duration, 1),
+            })
+
+        if not generated_clips:
+            ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": "No clips could be processed"}
+            return
+
+        generated_clips.sort(key=lambda c: c["rank"])
+        ranking_gen_jobs[gen_id] = {"status": "done", "user_id": user_id, "progress": 100, "message": "Done!", "clips": generated_clips, "clip_id": generated_clips[0]["clip_id"]}
+        print(f"RANKING GEN {gen_id}: DONE — {len(generated_clips)} clips generated")
 
     except Exception as e:
         print(f"RANKING GEN {gen_id}: fatal error: {e}")
         traceback.print_exc()
         ranking_gen_jobs[gen_id] = {"status": "error", "user_id": user_id, "message": str(e)[:200]}
     finally:
-        for f in local_files + temp_files:
+        for f in local_files:
             try:
                 os.unlink(f)
             except OSError:

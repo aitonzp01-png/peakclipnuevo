@@ -1685,6 +1685,138 @@ body {
   gap: 14px;
 }
 
+/* ── Generated clips gallery ────────────────────────────────── */
+
+.ar-gen-clips {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
+}
+
+.ar-gen-clips-header {
+  margin-bottom: 16px;
+}
+
+.ar-gen-clips-title {
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.4px;
+  color: var(--db-text-primary);
+  margin: 0 0 4px;
+}
+
+.ar-gen-clips-subtitle {
+  font-size: 12.5px;
+  color: var(--db-text-secondary);
+  margin: 0;
+}
+
+.ar-gen-clips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.ar-gen-clip-card {
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: var(--db-input-bg);
+  border: 1px solid var(--db-border);
+  display: flex;
+  flex-direction: column;
+}
+
+.ar-gen-clip-thumb-wrap {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01));
+}
+
+.ar-gen-clip-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.ar-gen-clip-thumb-bg {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--db-accent, #c4ff3d);
+}
+
+.ar-gen-clip-rank {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  font-size: 12px;
+  font-weight: 900;
+  color: #0f0f0f;
+  background: var(--db-accent, #c4ff3d);
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.ar-gen-clip-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.ar-gen-clip-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--db-text-primary);
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ar-gen-clip-dur {
+  font-size: 11px;
+  color: var(--db-text-secondary);
+}
+
+.ar-gen-clip-actions {
+  margin-top: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.ar-gen-clip-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--db-text-primary);
+  background: var(--db-input-bg);
+  border: 1px solid var(--db-border);
+  border-radius: 8px;
+  padding: 7px 8px;
+  text-decoration: none;
+  transition: opacity 0.2s, background-color 0.2s;
+}
+
+.ar-gen-clip-btn:hover {
+  opacity: 0.85;
+}
+
+.ar-gen-clip-btn-primary {
+  background: var(--db-accent, #c4ff3d);
+  color: #0f0f0f;
+  border-color: transparent;
+}
+
 /* ── Simulation ─────────────────────────────────────────────── */
 
 .ar-sim-card {
